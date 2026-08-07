@@ -1,0 +1,8 @@
+#!/bin/bash
+set -euo pipefail
+CONFIG=/etc/backupmanager/backupmanager.conf
+[ -r "$CONFIG" ] || exit 2
+source "$CONFIG"
+PUBKEY="${SSH_KEY}.pub"
+[ -r "$PUBKEY" ] || exit 3
+printf "%s\t%s\t%s\n" "${SOURCE_ID:-}" "${BACKUP_HOST:-}" "$(cat "$PUBKEY")"

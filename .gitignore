@@ -1,0 +1,30 @@
+# Real configuration / secrets
+service/config/backupmanager.conf.current
+service/config/backupmanager.conf
+*.secret
+*.key
+*.pem
+
+# SSH
+**/.ssh/
+id_ed25519
+id_ed25519.pub
+
+# Runtime / backup data
+*.sql
+*.sql.gz
+*.dump
+*.tar
+*.tar.gz
+*.log
+status/
+database/
+
+# Provider local config
+provider/config/config.php
+provider/.env
+
+# Editor/system files
+.DS_Store
+*.swp
+*~

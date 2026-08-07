@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Backup Manager on configured days and time
+
+[Timer]
+OnCalendar=Mon,Tue,Wed,Thu,Fri,Sat,Sun *-*-* 02:00:00
+Persistent=true
+Unit=backupmanager.service
+
+[Install]
+WantedBy=timers.target
