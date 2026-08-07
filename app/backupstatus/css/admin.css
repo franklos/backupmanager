@@ -1,0 +1,292 @@
+#backupstatus-admin {
+    --bm-focus: #f27a1a;
+    --bm-focus-ring: rgba(242, 122, 26, 0.20);
+    --bm-valid: #55a630;
+    --bm-valid-ring: rgba(85, 166, 48, 0.12);
+
+    width: min(100%, 980px);
+    margin: 0 auto;
+    padding: 16px 20px 40px;
+    box-sizing: border-box;
+    color: var(--color-main-text);
+}
+
+/* Volgt automatisch het lichte/donkere Nextcloud-thema */
+#backupstatus-admin > h2 {
+    margin: 8px 0 24px;
+    color: var(--color-main-text);
+    font-size: clamp(2rem, 4vw, 2.8rem);
+    line-height: 1.1;
+    font-weight: 700;
+    letter-spacing: -0.025em;
+}
+
+.backupmanager-card {
+    margin: 0 0 24px;
+    padding: 26px;
+    background: var(--color-main-background);
+    color: var(--color-main-text);
+    border: 1px solid var(--color-border);
+    border-radius: var(--border-radius-large, 16px);
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.07);
+    box-sizing: border-box;
+}
+
+.backupmanager-card h3 {
+    margin: 0 0 24px;
+    color: var(--color-main-text);
+    font-size: 1.35rem;
+    font-weight: 700;
+}
+
+.backupstatus-field {
+    display: grid;
+    grid-template-columns: minmax(180px, 230px) minmax(0, 1fr);
+    align-items: center;
+    gap: 10px 22px;
+    margin: 18px 0;
+}
+
+.backupstatus-field > label {
+    color: var(--color-main-text);
+    font-weight: 600;
+}
+
+.backupstatus-field input,
+.backupstatus-field select,
+.backupstatus-time-wrapper input {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    min-height: 44px;
+    box-sizing: border-box;
+    color: var(--color-main-text);
+    background-color: var(--color-main-background);
+    border: 1px solid var(--color-border);
+    transition:
+        border-color 120ms ease,
+        box-shadow 120ms ease,
+        background-color 120ms ease;
+}
+
+/* Oranje accent tijdens invoer */
+.backupstatus-field input:focus,
+.backupstatus-field select:focus,
+.backupstatus-time-wrapper input:focus {
+    border-color: var(--bm-focus) !important;
+    box-shadow: 0 0 0 3px var(--bm-focus-ring) !important;
+    outline: none !important;
+}
+
+/* Geldige, ingevulde URL en e-mail */
+.backupstatus-field input:not(:focus):not(:placeholder-shown):valid {
+    border-color: var(--bm-valid);
+    box-shadow: 0 0 0 2px var(--bm-valid-ring);
+}
+
+/* Ongeldige invoer pas tonen wanneer er werkelijk iets is ingevuld */
+.backupstatus-field input:not(:focus):not(:placeholder-shown):invalid {
+    border-color: var(--color-error, #c00);
+}
+
+#backupstatus-ssh-fields,
+#backupstatus-provider-fields,
+#backupstatus-aws-fields,
+#backupstatus-s3-fields {
+    margin-top: 22px;
+    padding: 22px;
+    background: var(--color-background-hover);
+    border: 1px solid var(--color-border);
+    border-radius: var(--border-radius-large, 14px);
+    box-sizing: border-box;
+}
+
+.backupstatus-checkbox {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin: 22px 0 0;
+    line-height: 1.45;
+    color: var(--color-main-text);
+}
+
+.backupstatus-checkbox input {
+    flex: 0 0 auto;
+    margin-top: 3px;
+}
+
+.backupstatus-provider-actions,
+.backupstatus-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 14px;
+    margin-top: 24px;
+}
+
+/* Knoppen blijven volledig Nextcloud-themed */
+#backupstatus-request-provider,
+#backupstatus-save {
+    min-height: 44px;
+    padding-inline: 22px;
+    font-weight: 600;
+}
+
+#backupstatus-schedule {
+    margin: 0;
+    padding: 0;
+    border: 0;
+}
+
+#backupstatus-schedule legend {
+    margin-bottom: 10px;
+    font-weight: 600;
+}
+
+.backupstatus-week {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(62px, 1fr));
+    gap: 9px;
+    margin: 12px 0 24px;
+}
+
+.backupstatus-day {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 46px;
+    padding: 7px;
+    color: var(--color-main-text);
+    background: var(--color-main-background);
+    border: 1px solid var(--color-border);
+    border-radius: var(--border-radius, 10px);
+    box-sizing: border-box;
+    cursor: pointer;
+}
+
+.backupstatus-day:hover {
+    background: var(--color-background-hover);
+}
+
+.backupstatus-day:has(input:focus-visible) {
+    border-color: var(--bm-focus);
+    box-shadow: 0 0 0 3px var(--bm-focus-ring);
+}
+
+.backupstatus-day:has(input:checked) {
+    border-color: var(--color-primary-element);
+    background: var(--color-primary-element-light);
+}
+
+.backupstatus-day input {
+    margin-right: 7px;
+}
+
+.backupstatus-time-wrapper {
+    width: min(100%, 280px);
+}
+
+#backupstatus-result {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 40px;
+    padding: 0 16px;
+    border-radius: 999px;
+    font-weight: 600;
+    box-sizing: border-box;
+}
+
+#backupstatus-result.success {
+    color: var(--color-success-text, #247a3c);
+    background: var(--color-success-hover, rgba(70, 160, 90, 0.15));
+}
+
+#backupstatus-result.failed {
+    color: var(--color-error-text, #b42318);
+    background: var(--color-error-hover, rgba(190, 40, 40, 0.13));
+}
+
+#backupstatus-result.testing {
+    color: var(--color-warning-text, #805b00);
+    background: var(--color-warning-hover, rgba(220, 160, 20, 0.16));
+}
+
+[hidden] {
+    display: none !important;
+}
+
+@media (max-width: 760px) {
+    #backupstatus-admin {
+        padding: 12px 12px 32px;
+    }
+
+    #backupstatus-admin > h2 {
+        font-size: 2rem;
+    }
+
+    .backupmanager-card {
+        padding: 20px 16px;
+        border-radius: var(--border-radius-large, 13px);
+    }
+
+    .backupstatus-field {
+        grid-template-columns: 1fr;
+        gap: 7px;
+    }
+
+    .backupstatus-week {
+        grid-template-columns: repeat(4, minmax(64px, 1fr));
+    }
+
+    .backupstatus-time-wrapper {
+        width: 100%;
+    }
+
+    .backupstatus-provider-actions,
+    .backupstatus-actions {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    #backupstatus-request-provider,
+    #backupstatus-save,
+    #backupstatus-result {
+        width: 100%;
+    }
+}
+
+@media (max-width: 430px) {
+    .backupstatus-week {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    #backupstatus-ssh-fields,
+    #backupstatus-provider-fields,
+    #backupstatus-aws-fields,
+    #backupstatus-s3-fields {
+        padding: 14px;
+    }
+}
+
+.backupstatus-checkbox{
+    display:flex;
+    align-items:center;
+    gap:12px;
+    margin:18px 0;
+}
+
+.backupstatus-checkbox input[type="checkbox"]{
+    margin:0;
+    flex:0 0 auto;
+}
+
+.backupstatus-checkbox span{
+    display:block;
+    line-height:1.45;
+}
+
+.backupstatus-provider-actions{
+    margin-top:20px;
+    margin-left:36px;
+}
