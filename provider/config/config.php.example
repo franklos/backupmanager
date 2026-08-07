@@ -14,7 +14,7 @@ return [
     'storage' => [
         'host' => 'localhost',
         'port' => 22,
-        'user' => 'backupmanager',
+        'user' => 'backupstore',
         'root' => '/var/lib/backupmanager-provider',
     ],
 

@@ -34,15 +34,9 @@ if (!preg_match('/^BM-[0-9]{6}$/', $clientId)) {
 
 $config = new Config(dirname(__DIR__) . '/config/config.php');
 $db = new Database($config);
-$pdo = $db->pdo();
 
-$stmt = $pdo->prepare(
-    'SELECT
-        c.client_id,
-        c.status,
-        k.public_key,
-        k.fingerprint,
-        s.storage_path
+$stmt = $db->pdo()->prepare(
+    'SELECT k.public_key, s.storage_path
      FROM clients c
      JOIN ssh_keys k
        ON k.client_id = c.client_id
@@ -56,10 +50,7 @@ $stmt = $pdo->prepare(
      LIMIT 1'
 );
 
-$stmt->execute([
-    'client_id' => $clientId,
-]);
-
+$stmt->execute(['client_id' => $clientId]);
 $row = $stmt->fetch();
 
 if (!is_array($row)) {
@@ -69,74 +60,41 @@ if (!is_array($row)) {
 $storageRoot = realpath(
     (string)$config->get('storage', 'root', '/var/lib/backupmanager-provider')
 );
-
 $storagePath = realpath((string)$row['storage_path']);
 
-if ($storageRoot === false || $storagePath === false) {
-    fail('Storage path does not exist');
+if (
+    $storageRoot === false
+    || $storagePath === false
+    || $storagePath !== $storageRoot . '/' . $clientId
+) {
+    fail('Unsafe or missing storage path');
 }
 
-if ($storagePath !== $storageRoot . '/' . $clientId) {
-    fail('Unsafe storage path');
-}
-
-$rrsync = '/usr/bin/rrsync';
-
-if (!is_executable($rrsync)) {
+if (!is_executable('/usr/bin/rrsync')) {
     fail('/usr/bin/rrsync not found');
 }
 
-$forcedCommand = sprintf(
-    '%s -wo %s',
-    $rrsync,
-    escapeshellarg($storagePath)
-);
+$keyParts = preg_split('/\s+/', trim((string)$row['public_key']));
 
-$key = trim((string)$row['public_key']);
-
-$authorizedLine = sprintf(
-    'restrict,command="%s" %s',
-    str_replace(
-        ['\\', '"'],
-        ['\\\\', '\\"'],
-        $forcedCommand
-    ),
-    $key
-);
-
-$file = '/var/lib/backupmanager-provider/.ssh/authorized_keys';
-
-$current = is_file($file)
-    ? file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)
-    : [];
-
-if ($current === false) {
-    fail('Unable to read authorized_keys');
+if (!is_array($keyParts) || count($keyParts) < 2) {
+    fail('Invalid public key');
 }
 
-/* Verwijder eventuele bestaande entry voor exact dezelfde key. */
-$current = array_values(array_filter(
-    $current,
-    static fn(string $line): bool => !str_contains($line, $key)
-));
+$key = $keyParts[0] . ' ' . $keyParts[1];
 
-$current[] = $authorizedLine;
+$forcedCommand = '/usr/bin/rrsync -wo ' . escapeshellarg($storagePath);
+
+$line = sprintf(
+    'restrict,command="%s" %s bm-client=%s',
+    str_replace(['\\', '"'], ['\\\\', '\\"'], $forcedCommand),
+    $key,
+    $clientId
+);
 
 $tmp = tempnam('/tmp', 'bm-auth-');
 
-if ($tmp === false) {
-    fail('Unable to create temporary file');
-}
-
-if (
-    file_put_contents(
-        $tmp,
-        implode(PHP_EOL, $current) . PHP_EOL,
-        LOCK_EX
-    ) === false
-) {
-    @unlink($tmp);
-    fail('Unable to write temporary authorized_keys');
+if ($tmp === false || file_put_contents($tmp, $line . PHP_EOL, LOCK_EX) === false) {
+    fail('Unable to create temporary authorization file');
 }
 
 echo $tmp . PHP_EOL;

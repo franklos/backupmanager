@@ -265,6 +265,44 @@ try {
         }
     }
 
+    $keyParts = preg_split('/\s+/', trim((string)$request['public_key']));
+
+    if (!is_array($keyParts) || count($keyParts) < 2) {
+        throw new RuntimeException('Invalid SSH public key');
+    }
+
+    $publicKey = $keyParts[0] . ' ' . $keyParts[1];
+
+    $forcedCommand = '/usr/bin/rrsync -wo ' . escapeshellarg($storagePath);
+
+    $authorizedLine = sprintf(
+        'restrict,command="%s" %s bm-client=%s',
+        str_replace(['\\', '"'], ['\\\\', '\\"'], $forcedCommand),
+        $publicKey,
+        $clientId
+    );
+
+    $tmpFile = tempnam('/tmp', 'bm-auth-');
+
+    if (
+        $tmpFile === false
+        || file_put_contents($tmpFile, $authorizedLine . PHP_EOL, LOCK_EX) === false
+    ) {
+        throw new RuntimeException('Unable to prepare SSH authorization');
+    }
+
+    $installCommand = sprintf(
+        'sudo /usr/local/sbin/backupmanager-install-authorized-keys %s',
+        escapeshellarg($tmpFile)
+    );
+
+    exec($installCommand, $output, $exitCode);
+
+    if ($exitCode !== 0) {
+        @unlink($tmpFile);
+        throw new RuntimeException('SSH provisioning install failed');
+    }
+
     $pdo->commit();
 
     echo "APPROVED\n";
