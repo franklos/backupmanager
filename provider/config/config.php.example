@@ -1,0 +1,24 @@
+<?php
+
+return [
+    'database' => [
+        'host' => 'localhost',
+        'port' => 3306,
+        'name' => 'backupmanager_provider',
+        'user' => 'backupmanager_provider',
+        'password' => '',
+        'charset' => 'utf8mb4',
+    ],
+
+
+    'storage' => [
+        'host' => 'localhost',
+        'port' => 22,
+        'user' => 'backupmanager',
+        'root' => '/var/lib/backupmanager-provider',
+    ],
+
+    'api' => [
+        'request_expiry_hours' => 24,
+    ],
+];
