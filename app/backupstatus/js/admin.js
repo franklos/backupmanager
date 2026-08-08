@@ -86,28 +86,55 @@
         const providerEmail = document.getElementById("backupstatus-provider-email");
 
         const destinationType = document.getElementById("backupstatus-destination-type");
+        const credentialMode = document.getElementById("backupstatus-credential-mode");
         const sshFields = document.getElementById("backupstatus-ssh-fields");
-        const providerFields = document.getElementById("backupstatus-provider-fields");
+        const sshManualFields = document.getElementById("backupstatus-ssh-manual-fields");
+        const sshManagedFields = document.getElementById("backupstatus-ssh-managed-fields");
         const awsFields = document.getElementById("backupstatus-aws-fields");
         const s3Fields = document.getElementById("backupstatus-s3-fields");
 
         function updateDestinationFields() {
-            const selected = destinationType ? destinationType.value : "ssh";
-            if (sshFields) sshFields.hidden = selected !== "ssh";
-            if (providerFields) providerFields.hidden = selected !== "external_provider";
-            if (awsFields) awsFields.hidden = selected !== "aws_s3";
-            if (s3Fields) s3Fields.hidden = selected !== "s3_compatible";
-            if (useProvider) useProvider.checked = selected === "external_provider";
+            const destination = destinationType ? destinationType.value : "ssh";
+            const mode = credentialMode ? credentialMode.value : "manual";
+
+            if (sshFields) {
+                sshFields.hidden = destination !== "ssh";
+            }
+
+            if (sshManualFields) {
+                sshManualFields.hidden = destination !== "ssh" || mode !== "manual";
+            }
+
+            if (sshManagedFields) {
+                sshManagedFields.hidden = destination !== "ssh" || mode !== "managed";
+            }
+
+            if (awsFields) {
+                awsFields.hidden = destination !== "aws_s3";
+            }
+
+            if (s3Fields) {
+                s3Fields.hidden = destination !== "s3_compatible";
+            }
+
+            if (useProvider) {
+                useProvider.checked = destination === "ssh" && mode === "managed";
+            }
         }
 
         if (destinationType) {
             destinationType.addEventListener("change", updateDestinationFields);
-            updateDestinationFields();
         }
 
-        if (requestButton && useProvider && consent && providerUrl && providerEmail) {
+        if (credentialMode) {
+            credentialMode.addEventListener("change", updateDestinationFields);
+        }
+
+        updateDestinationFields();
+
+        if (requestButton && consent && providerUrl && providerEmail) {
             requestButton.addEventListener("click", async function () {
-                if (!useProvider.checked || !consent.checked) {
+                if (!consent.checked) {
                     window.alert(OC.L10N.translate("backupstatus", "Consent is required"));
                     return;
                 }
@@ -125,6 +152,7 @@
                         OC.generateUrl("/apps/backupstatus/settings/request-provider"),
                         body.toString()
                     );
+
                     const data = await response.json();
 
                     if (!response.ok || !data.success) {
@@ -132,13 +160,82 @@
                     }
 
                     requestButton.textContent = OC.L10N.translate("backupstatus", "Request sent");
+                    window.dispatchEvent(new CustomEvent("backupstatus:changed"));
                 } catch (error) {
                     requestButton.disabled = false;
                     requestButton.textContent = OC.L10N.translate("backupstatus", "Request access");
-                    window.alert(error.message || OC.L10N.translate("backupstatus", "Request failed"));
+                    window.alert(
+                        error.message ||
+                        OC.L10N.translate("backupstatus", "Request failed")
+                    );
                 }
             });
         }
+
+        async function checkProviderStatus() {
+            try {
+                const response = await fetch(
+                    OC.generateUrl("/apps/backupstatus/settings/provider-status"),
+                    {
+                        method: "GET",
+                        credentials: "same-origin",
+                        headers: {
+                            "requesttoken": OC.requestToken,
+                            "Accept": "application/json"
+                        }
+                    }
+                );
+
+                const data = await response.json();
+
+                if (!response.ok || !data.success) {
+                    return;
+                }
+
+                if (!requestButton) {
+                    return;
+                }
+
+                if (data.status === "pending") {
+                    requestButton.disabled = true;
+                    requestButton.textContent = OC.L10N.translate("backupstatus", "Pending approval");
+                    return;
+                }
+
+                if (data.status === "approved") {
+                    requestButton.disabled = true;
+                    requestButton.textContent = OC.L10N.translate("backupstatus", "Approved");
+
+                    if (result) {
+                        result.textContent = "✔ " + OC.L10N.translate("backupstatus", "Connected");
+                        result.className = "success";
+                    }
+
+                    window.dispatchEvent(new CustomEvent("backupstatus:changed"));
+                    return;
+                }
+
+                if (data.status === "rejected") {
+                    requestButton.disabled = false;
+                    requestButton.textContent = OC.L10N.translate("backupstatus", "Request rejected");
+                    return;
+                }
+
+                if (data.status === "expired") {
+                    requestButton.disabled = false;
+                    requestButton.textContent = OC.L10N.translate("backupstatus", "Request access");
+                }
+            } catch (error) {
+                // Stil falen; statuscontrole mag de instellingenpagina niet blokkeren.
+            }
+        }
+
+        if (requestButton) {
+            checkProviderStatus();
+
+            window.setInterval(checkProviderStatus, 15000);
+        }
+
     }
 
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ready);

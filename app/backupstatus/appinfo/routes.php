@@ -10,5 +10,6 @@ return [
         ['name' => 'settings#save', 'url' => '/settings', 'verb' => 'POST'],
         ['name' => 'settings#enableLocalRemote', 'url' => '/settings/enable-local-remote', 'verb' => 'POST'],
         ['name' => 'settings#requestProvider', 'url' => '/settings/request-provider', 'verb' => 'POST'],
+        ['name' => 'settings#providerStatus', 'url' => '/settings/provider-status', 'verb' => 'GET'],
     ],
 ];

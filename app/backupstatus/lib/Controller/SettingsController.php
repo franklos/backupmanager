@@ -147,6 +147,109 @@ final class SettingsController extends Controller {
         return new JSONResponse(["success" => true, "requestId" => $requestId]);
     }
 
+    public function providerStatus(): JSONResponse {
+        $providerUrl = rtrim(
+            $this->config->getAppValue("backupstatus", "provider_url", ""),
+            "/"
+        );
+        $requestId = $this->config->getAppValue(
+            "backupstatus",
+            "provider_request_id",
+            ""
+        );
+        $requestToken = $this->config->getAppValue(
+            "backupstatus",
+            "provider_request_token",
+            ""
+        );
+
+        if ($providerUrl === "" || $requestId === "" || $requestToken === "") {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "No provider request available",
+            ], 404);
+        }
+
+        try {
+            $client = $this->clientService->newClient();
+
+            $response = $client->get(
+                $providerUrl . "/api/v1/requests/" . rawurlencode($requestId),
+                [
+                    "headers" => [
+                        "Accept" => "application/json",
+                        "Authorization" => "Bearer " . $requestToken,
+                    ],
+                    "timeout" => 30,
+                ]
+            );
+
+            $data = json_decode((string)$response->getBody(), true);
+
+            if (!is_array($data) || !($data["success"] ?? false)) {
+                return new JSONResponse([
+                    "success" => false,
+                    "error" => "Invalid status response from backup provider",
+                ], 502);
+            }
+
+            $status = (string)($data["status"] ?? "unknown");
+
+            $this->config->setAppValue(
+                "backupstatus",
+                "provider_request_status",
+                $status
+            );
+
+            if (
+                $status === "approved"
+                && isset($data["connection"])
+                && is_array($data["connection"])
+            ) {
+                $connection = $data["connection"];
+
+                $this->config->setAppValue(
+                    "backupstatus",
+                    "provider_client_id",
+                    (string)($connection["client_id"] ?? "")
+                );
+                $this->config->setAppValue(
+                    "backupstatus",
+                    "backup_host",
+                    (string)($connection["host"] ?? "")
+                );
+                $this->config->setAppValue(
+                    "backupstatus",
+                    "backup_port",
+                    (string)($connection["port"] ?? "22")
+                );
+                $this->config->setAppValue(
+                    "backupstatus",
+                    "backup_user",
+                    (string)($connection["user"] ?? "")
+                );
+                $this->config->setAppValue(
+                    "backupstatus",
+                    "backup_path",
+                    (string)($connection["path"] ?? "")
+                );
+            }
+
+            return new JSONResponse([
+                "success" => true,
+                "status" => $status,
+                "requestId" => $requestId,
+                "connection" => $data["connection"] ?? null,
+            ]);
+        } catch (Throwable $e) {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Provider status check failed: " . $e->getMessage(),
+            ], 502);
+        }
+    }
+
+
     /**
      * @return array{success: bool, error: string}
      */

@@ -43,6 +43,12 @@ try {
     );
 
     $router->add(
+        'POST',
+        '#^/api/v1/clients/(BM-[0-9]{6})/deletion-requests/?$#',
+        [$requestController, 'requestDeletion']
+    );
+
+    $router->add(
         'GET',
         '#^/api/v1/requests/([A-Za-z0-9-]+)/?$#',
         [$requestController, 'status']

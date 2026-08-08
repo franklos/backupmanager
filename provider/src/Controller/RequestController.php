@@ -266,7 +266,7 @@ final class RequestController
             $request['status'] = 'expired';
         }
 
-        Response::json([
+        $response = [
             'success' => true,
             'request_id' => $request['request_id'],
             'status' => $request['status'],
@@ -276,7 +276,190 @@ final class RequestController
             'approved_at' => $request['approved_at'],
             'rejected_at' => $request['rejected_at'],
             'expires_at' => $request['expires_at'],
+        ];
+
+        if ($request['status'] === 'approved') {
+            $connection = $this->database->pdo()->prepare(
+                'SELECT
+                    c.client_id,
+                    s.storage_host,
+                    s.storage_port,
+                    s.storage_user,
+                    s.storage_path
+                 FROM clients c
+                 JOIN storage_allocations s
+                   ON s.client_id = c.client_id
+                  AND s.status = "active"
+                  AND s.destination_type = "ssh"
+                 WHERE c.source_id = :source_id
+                   AND c.status = "active"
+                 LIMIT 1'
+            );
+
+            $connection->execute([
+                'source_id' => $request['source_id'],
+            ]);
+
+            $connectionData = $connection->fetch();
+
+            if (is_array($connectionData)) {
+                $response['connection'] = [
+                    'client_id' => $connectionData['client_id'],
+                    'host' => $connectionData['storage_host'],
+                    'port' => (int)$connectionData['storage_port'],
+                    'user' => $connectionData['storage_user'],
+                    'path' => $connectionData['storage_path'],
+                ];
+            }
+        }
+
+        Response::json($response);
+    }
+
+
+
+    public function requestDeletion(string $clientId): never
+    {
+        $token = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+
+        if (!str_starts_with($token, 'Bearer ')) {
+            Response::json([
+                'success' => false,
+                'error' => 'Missing bearer token',
+            ], 401);
+        }
+
+        $requestToken = trim(substr($token, 7));
+
+        if ($requestToken === '') {
+            Response::json([
+                'success' => false,
+                'error' => 'Invalid bearer token',
+            ], 401);
+        }
+
+        $pdo = $this->database->pdo();
+
+        $client = $pdo->prepare(
+            'SELECT
+                c.client_id,
+                c.source_id,
+                pr.request_token_hash
+             FROM clients c
+             JOIN provider_requests pr
+               ON pr.source_id = c.source_id
+              AND pr.status = "approved"
+             WHERE c.client_id = :client_id
+               AND c.status = "active"
+             ORDER BY pr.id DESC
+             LIMIT 1'
+        );
+
+        $client->execute([
+            'client_id' => $clientId,
         ]);
+
+        $clientData = $client->fetch();
+
+        if (!is_array($clientData)) {
+            Response::json([
+                'success' => false,
+                'error' => 'Client not found',
+            ], 404);
+        }
+
+        if (!hash_equals(
+            (string)$clientData['request_token_hash'],
+            hash('sha256', $requestToken)
+        )) {
+            Response::json([
+                'success' => false,
+                'error' => 'Invalid bearer token',
+            ], 403);
+        }
+
+        $existing = $pdo->prepare(
+            'SELECT deletion_request_id
+             FROM deletion_requests
+             WHERE client_id = :client_id
+               AND status = "pending"
+             LIMIT 1'
+        );
+
+        $existing->execute([
+            'client_id' => $clientId,
+        ]);
+
+        $existingRequest = $existing->fetch();
+
+        if (is_array($existingRequest)) {
+            Response::json([
+                'success' => true,
+                'deletion_request_id' => $existingRequest['deletion_request_id'],
+                'status' => 'pending',
+            ]);
+        }
+
+        $deletionRequestId =
+            'DEL-' . gmdate('Ymd') . '-' . strtoupper(bin2hex(random_bytes(3)));
+
+        $insert = $pdo->prepare(
+            'INSERT INTO deletion_requests (
+                deletion_request_id,
+                client_id,
+                status,
+                delete_storage,
+                requested_ip
+            ) VALUES (
+                :deletion_request_id,
+                :client_id,
+                "pending",
+                1,
+                :requested_ip
+            )'
+        );
+
+        $insert->execute([
+            'deletion_request_id' => $deletionRequestId,
+            'client_id' => $clientId,
+            'requested_ip' => $_SERVER['REMOTE_ADDR'] ?? null,
+        ]);
+
+        $event = $pdo->prepare(
+            'INSERT INTO provider_events (
+                actor_type,
+                actor_id,
+                client_id,
+                event_type,
+                severity,
+                details,
+                remote_ip
+            ) VALUES (
+                "client",
+                :actor_id,
+                :client_id,
+                "deletion.requested",
+                "warning",
+                :details,
+                :remote_ip
+            )'
+        );
+
+        $event->execute([
+            'actor_id' => $clientData['source_id'],
+            'client_id' => $clientId,
+            'details' => json_encode([
+                'deletion_request_id' => $deletionRequestId,
+                'delete_storage' => true,
+            ], JSON_UNESCAPED_SLASHES),
+            'remote_ip' => $_SERVER['REMOTE_ADDR'] ?? null,
+        ]);
+
+        Response::json([
+            'success' => true,
+            'deletion_request_id' => $deletionRequestId,
+            'status' => 'pending',
+        ], 201);
     }
 
 
