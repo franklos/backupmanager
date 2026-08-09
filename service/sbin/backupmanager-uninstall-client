@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODE="${1:-keep-data}"
+
+case "$MODE" in
+    keep-data)
+        ARG=""
+        ;;
+    purge)
+        ARG="--purge"
+        ;;
+    *)
+        echo "Usage: backupmanager-uninstall-client [keep-data|purge]" >&2
+        exit 1
+        ;;
+esac
+
+systemd-run \
+    --quiet \
+    --collect \
+    --unit="backupmanager-uninstall-$(date +%s)" \
+    --on-active=3s \
+    /usr/local/sbin/backupmanager-uninstall-now $ARG
+
+echo "scheduled"

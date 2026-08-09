@@ -89,62 +89,162 @@ final class SettingsController extends Controller {
         ]);
     }
 
-    public function requestProvider(string $consent = "0", string $providerUrl = "", string $providerEmail = ""): JSONResponse {
+    public function requestProvider(
+        string $consent = "0",
+        string $providerUrl = "",
+        string $providerEmail = ""
+    ): JSONResponse {
         if ($consent !== "1") {
-            return new JSONResponse(["success" => false, "error" => $this->l10n->t("Consent is required")], 400);
+            return new JSONResponse([
+                "success" => false,
+                "error" => $this->l10n->t("Consent is required"),
+            ], 400);
         }
 
-        $providerUrl = trim($providerUrl);
+        $providerUrl = rtrim(trim($providerUrl), "/");
         $providerEmail = trim($providerEmail);
 
-        if (filter_var($providerUrl, FILTER_VALIDATE_URL) === false || strtolower((string)parse_url($providerUrl, PHP_URL_SCHEME)) !== "https") {
-            return new JSONResponse(["success" => false, "error" => $this->l10n->t("Enter a valid HTTPS provider URL")], 400);
+        if (
+            filter_var($providerUrl, FILTER_VALIDATE_URL) === false
+            || strtolower((string)parse_url($providerUrl, PHP_URL_SCHEME)) !== "https"
+        ) {
+            return new JSONResponse([
+                "success" => false,
+                "error" => $this->l10n->t("Enter a valid HTTPS provider URL"),
+            ], 400);
         }
 
         if (filter_var($providerEmail, FILTER_VALIDATE_EMAIL) === false) {
-            return new JSONResponse(["success" => false, "error" => $this->l10n->t("Enter a valid approval email address")], 400);
+            return new JSONResponse([
+                "success" => false,
+                "error" => $this->l10n->t("Enter a valid approval email address"),
+            ], 400);
         }
 
-        $process = proc_open(["sudo", "-n", "/usr/local/sbin/backupmanager-request-info"], [1 => ["pipe", "w"], 2 => ["pipe", "w"]], $pipes);
+        $process = proc_open(
+            ["sudo", "-n", "/usr/local/sbin/backupmanager-request-info"],
+            [
+                1 => ["pipe", "w"],
+                2 => ["pipe", "w"],
+            ],
+            $pipes
+        );
+
         if (!is_resource($process)) {
-            return new JSONResponse(["success" => false, "error" => "Request helper could not be started"], 500);
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Request helper could not be started",
+            ], 500);
         }
 
         $output = trim((string)stream_get_contents($pipes[1]));
         $error = trim((string)stream_get_contents($pipes[2]));
+
         fclose($pipes[1]);
         fclose($pipes[2]);
 
         if (proc_close($process) !== 0) {
-            return new JSONResponse(["success" => false, "error" => $error !== "" ? $error : "Request information unavailable"], 500);
+            return new JSONResponse([
+                "success" => false,
+                "error" => $error !== "" ? $error : "Request information unavailable",
+            ], 500);
         }
 
         $parts = explode("\t", $output, 3);
+
         if (count($parts) !== 3) {
-            return new JSONResponse(["success" => false, "error" => "Invalid request information"], 500);
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Invalid request information",
+            ], 500);
         }
 
-        [$sourceId, $backupHost, $publicKey] = $parts;
-        $requestId = "BM-" . gmdate("Ymd") . "-" . strtoupper(bin2hex(random_bytes(3)));
+        [$sourceId, $unusedBackupHost, $publicKey] = $parts;
+
+        $sourceUrl =
+            $this->request->getServerProtocol()
+            . "://"
+            . $this->request->getServerHost()
+            . \OC::$WEBROOT
+            . "/";
+
+        $payload = [
+            "source_id" => $sourceId,
+            "source_url" => $sourceUrl,
+            "public_key" => $publicKey,
+            "client_version" => "0.1.0-beta2",
+            "nextcloud_version" => implode(".", \OC_Util::getVersion()),
+            "approval_email" => $providerEmail,
+        ];
+
         try {
-            $message = $this->mailer->createMessage();
-            $message->setTo([$providerEmail]);
-            $message->setSubject("Nieuwe Backup Manager-aanvraag " . $requestId);
-            $message->setPlainBody("Aanvraag-ID: " . $requestId . "\nBron: " . $sourceId . "\nDoelserver: " . $backupHost . "\n\nPublieke SSH-sleutel:\n" . $publicKey . "\n");
-            $this->mailer->send($message);
+            $client = $this->clientService->newClient();
+
+            $response = $client->post(
+                $providerUrl . "/api/v1/requests",
+                [
+                    "headers" => [
+                        "Accept" => "application/json",
+                        "Content-Type" => "application/json",
+                    ],
+                    "body" => json_encode(
+                        $payload,
+                        JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+                    ),
+                    "timeout" => 30,
+                ]
+            );
+
+            $data = json_decode((string)$response->getBody(), true);
+
+            if (
+                !is_array($data)
+                || !($data["success"] ?? false)
+                || empty($data["request_id"])
+                || empty($data["request_token"])
+            ) {
+                return new JSONResponse([
+                    "success" => false,
+                    "error" => "Invalid response from backup provider",
+                ], 502);
+            }
+
+            $this->config->setAppValue("backupstatus", "provider_url", $providerUrl);
+            $this->config->setAppValue("backupstatus", "provider_email", $providerEmail);
+            $this->config->setAppValue("backupstatus", "provider_consent", "1");
+            $this->config->setAppValue("backupstatus", "provider_request_sent", "1");
+            $this->config->setAppValue(
+                "backupstatus",
+                "provider_request_id",
+                (string)$data["request_id"]
+            );
+            $this->config->setAppValue(
+                "backupstatus",
+                "provider_request_token",
+                (string)$data["request_token"]
+            );
+            $this->config->setAppValue(
+                "backupstatus",
+                "provider_request_status",
+                (string)($data["status"] ?? "pending")
+            );
+            $this->config->setAppValue(
+                "backupstatus",
+                "provider_request_time",
+                (string)time()
+            );
+
+            return new JSONResponse([
+                "success" => true,
+                "requestId" => $data["request_id"],
+                "status" => $data["status"] ?? "pending",
+            ]);
         } catch (Throwable $e) {
-            return new JSONResponse(["success" => false, "error" => "Mail verzenden mislukt: " . $e->getMessage()], 500);
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Provider request failed: " . $e->getMessage(),
+            ], 502);
         }
-
-        $this->config->setAppValue("backupstatus", "provider_url", $providerUrl);
-        $this->config->setAppValue("backupstatus", "provider_email", $providerEmail);
-        $this->config->setAppValue("backupstatus", "use_external_provider", "1");
-        $this->config->setAppValue("backupstatus", "provider_consent", "1");
-        $this->config->setAppValue("backupstatus", "provider_request_sent", "1");
-        $this->config->setAppValue("backupstatus", "provider_request_id", $requestId);
-        $this->config->setAppValue("backupstatus", "provider_request_time", (string)time());
-
-        return new JSONResponse(["success" => true, "requestId" => $requestId]);
     }
 
     public function providerStatus(): JSONResponse {
@@ -247,6 +347,205 @@ final class SettingsController extends Controller {
                 "error" => "Provider status check failed: " . $e->getMessage(),
             ], 502);
         }
+    }
+
+
+    public function removeBackupManager(
+        string $removeLocal = "0",
+        string $removeRemote = "0",
+        string $confirm = ""
+    ): JSONResponse {
+        $removeLocalEnabled = $removeLocal === "1";
+        $removeRemoteEnabled = $removeRemote === "1";
+
+        if (!$removeLocalEnabled && !$removeRemoteEnabled) {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Nothing selected for removal",
+            ], 400);
+        }
+
+        if ($removeRemoteEnabled && $confirm !== "DELETE") {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Remote deletion confirmation is required",
+            ], 400);
+        }
+
+        $destinationType = $this->config->getAppValue(
+            "backupstatus",
+            "destination_type",
+            "ssh"
+        );
+
+        $credentialMode = $this->config->getAppValue(
+            "backupstatus",
+            "credential_mode",
+            "manual"
+        );
+
+        $remoteResult = null;
+
+        if ($removeRemoteEnabled) {
+            if ($destinationType === "ssh" && $credentialMode === "managed") {
+                $providerUrl = rtrim(
+                    $this->config->getAppValue(
+                        "backupstatus",
+                        "provider_url",
+                        ""
+                    ),
+                    "/"
+                );
+
+                $clientId = $this->config->getAppValue(
+                    "backupstatus",
+                    "provider_client_id",
+                    ""
+                );
+
+                $requestToken = $this->config->getAppValue(
+                    "backupstatus",
+                    "provider_request_token",
+                    ""
+                );
+
+                if (
+                    $providerUrl === ""
+                    || $clientId === ""
+                    || $requestToken === ""
+                ) {
+                    return new JSONResponse([
+                        "success" => false,
+                        "error" => "Provider registration is incomplete",
+                    ], 400);
+                }
+
+                try {
+                    $client = $this->clientService->newClient();
+
+                    $response = $client->post(
+                        $providerUrl
+                        . "/api/v1/clients/"
+                        . rawurlencode($clientId)
+                        . "/deletion-requests",
+                        [
+                            "headers" => [
+                                "Accept" => "application/json",
+                                "Authorization" => "Bearer " . $requestToken,
+                                "Content-Type" => "application/json",
+                            ],
+                            "body" => json_encode([
+                                "client_id" => $clientId,
+                                "delete_storage" => true,
+                            ], JSON_UNESCAPED_SLASHES),
+                            "timeout" => 30,
+                        ]
+                    );
+
+                    $data = json_decode(
+                        (string)$response->getBody(),
+                        true
+                    );
+
+                    if (
+                        !is_array($data)
+                        || !($data["success"] ?? false)
+                        || empty($data["deletion_request_id"])
+                    ) {
+                        return new JSONResponse([
+                            "success" => false,
+                            "error" => "Invalid response from backup provider",
+                        ], 502);
+                    }
+
+                    $this->config->setAppValue(
+                        "backupstatus",
+                        "provider_deletion_request_id",
+                        (string)$data["deletion_request_id"]
+                    );
+
+                    $this->config->setAppValue(
+                        "backupstatus",
+                        "provider_deletion_status",
+                        (string)($data["status"] ?? "pending")
+                    );
+
+                    $remoteResult = [
+                        "type" => "provider",
+                        "status" => (string)($data["status"] ?? "pending"),
+                        "deletionRequestId" => (string)$data["deletion_request_id"],
+                    ];
+                } catch (Throwable $e) {
+                    return new JSONResponse([
+                        "success" => false,
+                        "error" => "Provider deletion request failed: "
+                            . $e->getMessage(),
+                    ], 502);
+                }
+            } else {
+                return new JSONResponse([
+                    "success" => false,
+                    "error" => "Remote deletion for this destination is not implemented yet",
+                ], 501);
+            }
+        }
+
+        if ($removeLocalEnabled) {
+            $mode = "purge";
+
+            $process = proc_open(
+                [
+                    "sudo",
+                    "-n",
+                    "/usr/local/sbin/backupmanager-uninstall-client",
+                    $mode,
+                ],
+                [
+                    1 => ["pipe", "w"],
+                    2 => ["pipe", "w"],
+                ],
+                $pipes
+            );
+
+            if (!is_resource($process)) {
+                return new JSONResponse([
+                    "success" => false,
+                    "error" => "Local uninstall helper could not be started",
+                ], 500);
+            }
+
+            $output = trim((string)stream_get_contents($pipes[1]));
+            $error = trim((string)stream_get_contents($pipes[2]));
+
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+
+            $exitCode = proc_close($process);
+
+            if ($exitCode !== 0) {
+                return new JSONResponse([
+                    "success" => false,
+                    "error" => $error !== ""
+                        ? $error
+                        : "Local uninstall could not be scheduled",
+                ], 500);
+            }
+
+            return new JSONResponse([
+                "success" => true,
+                "localRemovalScheduled" => true,
+                "remote" => $remoteResult,
+                "message" => $output !== ""
+                    ? $output
+                    : "Removal scheduled",
+            ]);
+        }
+
+        return new JSONResponse([
+            "success" => true,
+            "localRemovalScheduled" => false,
+            "remote" => $remoteResult,
+        ]);
     }
 
 

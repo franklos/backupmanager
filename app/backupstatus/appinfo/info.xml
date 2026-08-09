@@ -2,7 +2,7 @@
 <info xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
       xsi:noNamespaceSchemaLocation="https://apps.nextcloud.com/schema/apps/info.xsd">
     <id>backupstatus</id>
-    <name>Back-manager</name>
+    <name>Backup Manager</name>
     <summary>Installeer en manage back-up en controlleer de actuele back-upstatus binnen Nextcloud.</summary>
     <description>Beheerders stellen één bron-URL in. Gebruikers zien binnen Nextcloud de status van de laatste vier data- en databaseback-ups.</description>
     <version>0.1.0-beta2</version>

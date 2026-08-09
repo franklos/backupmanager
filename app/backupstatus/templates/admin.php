@@ -148,6 +148,101 @@ $weekDays = [
         </div>
     </div>
 
+    <div class="backupmanager-card backupstatus-recovery">
+        <h3><?php p($l->t('Recovery')); ?></h3>
+
+        <p>
+            <?php p($l->t('Recovery options for this Nextcloud installation.')); ?>
+        </p>
+
+        <div class="backupstatus-recovery-grid">
+            <div class="backupstatus-recovery-option">
+                <h4><?php p($l->t('Restore backup')); ?></h4>
+                <p>
+                    <?php p($l->t(
+                        'Restore data, the database, or the complete Nextcloud installation from an existing backup.'
+                    )); ?>
+                </p>
+                <button id="backupstatus-recovery-restore" type="button" disabled>
+                    <?php p($l->t('Restore backup')); ?>
+                </button>
+            </div>
+
+            <div class="backupstatus-recovery-option">
+                <h4><?php p($l->t('Disaster recovery')); ?></h4>
+                <p>
+                    <?php p($l->t(
+                        'Reconnect a newly installed server to an existing backup after loss or reinstallation of the original server.'
+                    )); ?>
+                </p>
+                <button id="backupstatus-recovery-disaster" type="button" disabled>
+                    <?php p($l->t('Start disaster recovery')); ?>
+                </button>
+            </div>
+
+            <div class="backupstatus-recovery-option">
+                <h4 id="backupstatus-recovery-access-title">
+                    <?php p($l->t('Recover backup access')); ?>
+                </h4>
+                <p id="backupstatus-recovery-access-text">
+                    <?php p($l->t(
+                        'Restore access to an existing remote backup when local credentials or configuration have been lost.'
+                    )); ?>
+                </p>
+                <button id="backupstatus-recovery-access" type="button" disabled>
+                    <?php p($l->t('Recover access')); ?>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div class="backupmanager-card backupstatus-removal">
+        <h3><?php p($l->t('Remove Backup Manager')); ?></h3>
+
+        <p>
+            <?php p($l->t(
+                'Choose what should be removed. Remote backup data is never removed unless explicitly selected.'
+            )); ?>
+        </p>
+
+        <label class="backupstatus-checkbox">
+            <input id="backupstatus-remove-local" type="checkbox">
+            <span>
+                <?php p($l->t('Remove local Backup Manager configuration and credentials')); ?>
+            </span>
+        </label>
+
+        <label class="backupstatus-checkbox">
+            <input id="backupstatus-remove-remote" type="checkbox">
+            <span id="backupstatus-remove-remote-label">
+                <?php p($l->t('Remove remote backup data for this installation')); ?>
+            </span>
+        </label>
+
+        <div id="backupstatus-remove-confirmation" hidden>
+            <p class="backupstatus-warning">
+                <?php p($l->t(
+                    'Remote backup deletion is permanent and is limited to the storage assigned to this Backup Manager client.'
+                )); ?>
+            </p>
+
+            <div class="backupstatus-field">
+                <label for="backupstatus-remove-confirm-text">
+                    <?php p($l->t('Type DELETE to confirm remote backup deletion')); ?>
+                </label>
+                <input
+                    id="backupstatus-remove-confirm-text"
+                    type="text"
+                    autocomplete="off"
+                    placeholder="DELETE">
+            </div>
+        </div>
+
+        <button id="backupstatus-remove-button" type="button" class="warning" disabled>
+            <?php p($l->t('Remove Backup Manager')); ?>
+        </button>
+    </div>
+
     <div class="backupmanager-card">
         <h3><?php p($l->t('Backup schedule')); ?></h3>
 

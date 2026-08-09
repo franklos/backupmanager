@@ -30,6 +30,16 @@ systemctl disable --now backupmanager.timer 2>/dev/null || true
 systemctl stop backupmanager.service 2>/dev/null || true
 
 if [[ -f "${NEXTCLOUD_ROOT}/occ" ]]; then
+    if [[ $PURGE -eq 1 ]]; then
+        mapfile -t APP_KEYS < <(
+            sudo -u www-data php "${NEXTCLOUD_ROOT}/occ"                 config:list backupstatus --output=json 2>/dev/null             | jq -r '.apps.backupstatus | keys[]' 2>/dev/null
+        )
+
+        for KEY in "${APP_KEYS[@]}"; do
+            sudo -u www-data php "${NEXTCLOUD_ROOT}/occ"                 config:app:delete backupstatus "$KEY" --quiet 2>/dev/null || true
+        done
+    fi
+
     sudo -u www-data php "${NEXTCLOUD_ROOT}/occ" app:disable backupstatus 2>/dev/null || true
     sudo -u www-data php "${NEXTCLOUD_ROOT}/occ" app:remove backupstatus 2>/dev/null || true
 fi
