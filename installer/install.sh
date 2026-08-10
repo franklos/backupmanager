@@ -50,9 +50,12 @@ if ! id "$BACKUP_USER" >/dev/null 2>&1; then
         "$BACKUP_USER"
 fi
 
+# Backup Manager moet Nextcloud-config en data kunnen lezen.
+usermod -aG www-data "$BACKUP_USER"
+
 install -d -o root -g "$BACKUP_GROUP" -m 0750 "$CONFIG_DIR"
 install -d -o "$BACKUP_USER" -g "$BACKUP_GROUP" -m 0750 "$RUNTIME_DIR"
-install -d -o "$BACKUP_USER" -g "$BACKUP_GROUP" -m 0750 "$STATUS_DIR"
+install -d -o "$BACKUP_USER" -g www-data -m 2750 "$STATUS_DIR"
 install -d -o "$BACKUP_USER" -g "$BACKUP_GROUP" -m 0750 "$DB_DUMP_DIR"
 install -d -o "$BACKUP_USER" -g "$BACKUP_GROUP" -m 0700 "$SSH_DIR"
 install -d -o "$BACKUP_USER" -g "$BACKUP_GROUP" -m 0750 "$LOG_DIR"
@@ -70,6 +73,14 @@ if [[ ! -f "${SSH_DIR}/id_ed25519" ]]; then
         -C "${BACKUP_USER}@$(hostname)"
 fi
 
+
+# Backup runtime scripts
+for script in backup-common.sh backup-database.sh backup-data.sh backup-run.sh; do
+    install -o root -g root -m 0755 \
+        "${SERVICE_SOURCE}/bin/${script}" \
+        "/usr/local/bin/${script}"
+done
+
 install -o root -g root -m 0755 \
     "${SERVICE_SOURCE}/sbin/backupmanager-request-info" \
     /usr/local/sbin/backupmanager-request-info
@@ -81,6 +92,15 @@ install -o root -g root -m 0755 \
 install -o root -g root -m 0755 \
     "${SERVICE_SOURCE}/sbin/backupmanager-test-connection" \
     /usr/local/sbin/backupmanager-test-connection
+
+install -o root -g root -m 0755 \
+    "${SERVICE_SOURCE}/sbin/backupmanager-apply-provider-config" \
+    /usr/local/sbin/backupmanager-apply-provider-config
+
+
+install -o root -g root -m 0755     "/home/admin/backupmanager/installer/uninstall.sh"     /usr/local/sbin/backupmanager-uninstall-now
+
+install -o root -g root -m 0755     "${SERVICE_SOURCE}/sbin/backupmanager-uninstall-client"     /usr/local/sbin/backupmanager-uninstall-client
 
 install -o root -g root -m 0644 \
     "${SERVICE_SOURCE}/systemd/backupmanager.service" \
@@ -102,6 +122,9 @@ cat > /etc/sudoers.d/backupmanager <<'EOF'
 www-data ALL=(root) NOPASSWD: /usr/local/sbin/backupmanager-request-info
 www-data ALL=(root) NOPASSWD: /usr/local/sbin/backupmanager-schedule *
 www-data ALL=(root) NOPASSWD: /usr/local/sbin/backupmanager-test-connection *
+www-data ALL=(root) NOPASSWD: /usr/local/sbin/backupmanager-apply-provider-config *
+www-data ALL=(root) NOPASSWD: /usr/local/sbin/backupmanager-uninstall-client keep-data
+www-data ALL=(root) NOPASSWD: /usr/local/sbin/backupmanager-uninstall-client purge
 EOF
 
 chmod 0440 /etc/sudoers.d/backupmanager

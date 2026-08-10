@@ -80,6 +80,7 @@
         });
 
         const requestButton = document.getElementById("backupstatus-request-provider");
+        const resendButton = document.getElementById("backupstatus-resend-provider");
         const useProvider = document.getElementById("backupstatus-use-provider");
         const consent = document.getElementById("backupstatus-provider-consent");
         const providerUrl = document.getElementById("backupstatus-provider-url");
@@ -421,6 +422,50 @@
                     window.alert(
                         error.message ||
                         OC.L10N.translate("backupstatus", "Removal failed")
+                    );
+                }
+            });
+        }
+
+        if (resendButton) {
+            resendButton.addEventListener("click", async function () {
+                resendButton.disabled = true;
+                resendButton.textContent =
+                    OC.L10N.translate("backupstatus", "Sending…");
+
+                try {
+                    const response = await post(
+                        OC.generateUrl("/apps/backupstatus/settings/provider-resend"),
+                        ""
+                    );
+
+                    const data = await response.json();
+
+                    if (!response.ok || !data.success) {
+                        throw new Error(
+                            data.error || "Notification could not be sent"
+                        );
+                    }
+
+                    resendButton.textContent =
+                        OC.L10N.translate("backupstatus", "Notification sent");
+
+                    window.setTimeout(function () {
+                        resendButton.disabled = false;
+                        resendButton.textContent =
+                            OC.L10N.translate("backupstatus", "Resend notification");
+                    }, 2500);
+                } catch (error) {
+                    resendButton.disabled = false;
+                    resendButton.textContent =
+                        OC.L10N.translate("backupstatus", "Resend notification");
+
+                    window.alert(
+                        error.message ||
+                        OC.L10N.translate(
+                            "backupstatus",
+                            "Notification could not be sent"
+                        )
                     );
                 }
             });

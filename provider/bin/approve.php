@@ -242,27 +242,20 @@ try {
     ]);
 
     /*
-     * Maak de opslagdirectory vóór commit.
-     * Als dit mislukt wordt ook de database teruggedraaid.
+     * Provision storage via beperkte root-helper.
+     * De helper valideert BM-xxxxxx en zet owner/group/mode correct.
      */
-    if (!is_dir($storagePath)) {
-        if (!mkdir($storagePath, 0750, true) && !is_dir($storagePath)) {
-            throw new RuntimeException(
-                'Unable to create storage directory: ' . $storagePath
-            );
-        }
-    }
+    $storageCommand = sprintf(
+        'sudo /usr/local/sbin/backupmanager-provision-storage %s',
+        escapeshellarg($clientId)
+    );
 
-    foreach (['data', 'database'] as $directory) {
-        $path = $storagePath . '/' . $directory;
+    exec($storageCommand, $storageOutput, $storageExitCode);
 
-        if (!is_dir($path)) {
-            if (!mkdir($path, 0750, true) && !is_dir($path)) {
-                throw new RuntimeException(
-                    'Unable to create directory: ' . $path
-                );
-            }
-        }
+    if ($storageExitCode !== 0) {
+        throw new RuntimeException(
+            'Storage provisioning failed'
+        );
     }
 
     $keyParts = preg_split('/\s+/', trim((string)$request['public_key']));

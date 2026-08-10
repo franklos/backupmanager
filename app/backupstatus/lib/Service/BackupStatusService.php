@@ -18,6 +18,46 @@ final class BackupStatusService {
     }
 
     public function getStatus(): array {
+        $providerStatus = trim(
+            $this->config->getAppValue(
+                'backupstatus',
+                'provider_request_status',
+                ''
+            )
+        );
+
+        $providerClientId = trim(
+            $this->config->getAppValue(
+                'backupstatus',
+                'provider_client_id',
+                ''
+            )
+        );
+
+        if ($providerStatus === 'approved' && $providerClientId !== '') {
+            return $this->providerStatus(
+                'ok',
+                'Connected',
+                $providerClientId
+            );
+        }
+
+        if ($providerStatus === 'pending') {
+            return $this->providerStatus(
+                'pending',
+                'Pending approval',
+                ''
+            );
+        }
+
+        if ($providerStatus === 'rejected') {
+            return $this->providerStatus(
+                'issue',
+                'Rejected',
+                ''
+            );
+        }
+
         $url = trim($this->config->getAppValue('backupstatus', 'backup_url', ''));
         if ($url === '') {
             return $this->offlineStatus();
@@ -133,9 +173,112 @@ final class BackupStatusService {
 
     private function segmentsContainIssue(array $segments): bool {
         foreach ($segments as $segment) {
-            if (($segment['state'] ?? '') !== 'ok') return true;
+            if (in_array(($segment['state'] ?? ''), ['issue', 'offline'], true)) {
+                return true;
+            }
         }
         return false;
+    }
+
+    private function providerStatus(
+        string $state,
+        string $label,
+        string $clientId
+    ): array {
+        $data = $this->localHistory(
+            '/var/lib/backupmanager/status/data-history.txt'
+        );
+
+        $database = $this->localHistory(
+            '/var/lib/backupmanager/status/db-history.txt'
+        );
+
+        $hasIssue =
+            $this->segmentsContainIssue($data)
+            || $this->segmentsContainIssue($database);
+
+        return [
+            'state' => $hasIssue ? 'issue' : $state,
+            'label' => $hasIssue ? 'Issue' : $label,
+            'clientId' => $clientId,
+            'managedProvider' => true,
+            'data' => $data,
+            'database' => $database,
+            'checkedAt' => time(),
+        ];
+    }
+
+    private function localHistory(string $file): array {
+        if (!is_readable($file)) {
+            return [];
+        }
+
+        $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+
+        if (!is_array($lines)) {
+            return [];
+        }
+
+        $byDate = [];
+
+        foreach ($lines as $line) {
+            $line = trim($line);
+
+            if (
+                preg_match(
+                    '/^(\d{2}-\d{2}-\d{4})\s+(\d{2}:\d{2})\s*\|\s*([^|]+)(?:\|\s*(.*))?$/u',
+                    $line,
+                    $m
+                ) !== 1
+            ) {
+                continue;
+            }
+
+            $date = $m[1];
+            $time = $m[2];
+            $token = strtoupper(trim($m[3]));
+
+            if ($token === 'START') {
+                continue;
+            }
+
+            $state = match ($token) {
+                'OK' => 'ok',
+                'ISSUE' => 'issue',
+                default => 'issue',
+            };
+
+            $byDate[$date] = [
+                'state' => $state,
+                'label' => $state === 'ok' ? 'OK' : 'Issue',
+                'detail' => $line,
+                'date' => $date,
+                'time' => $time,
+            ];
+        }
+
+        $today = new DateTimeImmutable('today');
+        $segments = [];
+
+        for ($daysAgo = 3; $daysAgo >= 0; $daysAgo--) {
+            $day = $today->sub(new DateInterval('P' . $daysAgo . 'D'));
+            $date = $day->format('d-m-Y');
+
+            if (isset($byDate[$date])) {
+                $segments[] = $byDate[$date];
+                continue;
+            }
+
+            $segments[] = [
+                'state' => 'none',
+                'label' => 'Geen resultaat',
+                'detail' => $date . ': nog geen back-upresultaat',
+                'date' => $date,
+                'time' => '',
+            ];
+        }
+
+        return $segments;
     }
 
     private function offlineStatus(): array {

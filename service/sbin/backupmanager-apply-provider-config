@@ -1,0 +1,93 @@
+#!/bin/sh
+set -eu
+
+CLIENT_ID="${1:-}"
+HOST="${2:-}"
+PORT="${3:-}"
+USER="${4:-}"
+PATH_VALUE="${5:-}"
+
+case "$CLIENT_ID" in
+    BM-[0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+    *) echo "Invalid client id" >&2; exit 1 ;;
+esac
+
+case "$HOST" in
+    ""|*[!A-Za-z0-9._:-]*)
+        echo "Invalid backup host" >&2
+        exit 1
+        ;;
+esac
+
+case "$PORT" in
+    ''|*[!0-9]*) echo "Invalid backup port" >&2; exit 1 ;;
+esac
+
+[ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || {
+    echo "Invalid backup port" >&2
+    exit 1
+}
+
+case "$USER" in
+    ""|*[!A-Za-z0-9._-]*)
+        echo "Invalid backup user" >&2
+        exit 1
+        ;;
+esac
+
+[ "$PATH_VALUE" = "/" ] || {
+    echo "Managed provider path must be /" >&2
+    exit 1
+}
+
+CONFIG=/etc/backupmanager/backupmanager.conf
+[ -f "$CONFIG" ] || {
+    echo "Backup Manager config not found" >&2
+    exit 1
+}
+
+TMP="$(mktemp /etc/backupmanager/.provider-config.XXXXXX)"
+
+awk \
+    -v host="$HOST" \
+    -v port="$PORT" \
+    -v user="$USER" \
+    -v path="$PATH_VALUE" '
+BEGIN {
+    seen_host=0
+    seen_port=0
+    seen_user=0
+    seen_path=0
+}
+$0 ~ /^BACKUP_HOST=/ {
+    print "BACKUP_HOST=" host
+    seen_host=1
+    next
+}
+$0 ~ /^BACKUP_PORT=/ {
+    print "BACKUP_PORT=" port
+    seen_port=1
+    next
+}
+$0 ~ /^BACKUP_USER=/ {
+    print "BACKUP_USER=" user
+    seen_user=1
+    next
+}
+$0 ~ /^BACKUP_PATH=/ {
+    print "BACKUP_PATH=" path
+    seen_path=1
+    next
+}
+{ print }
+END {
+    if (!seen_host) print "BACKUP_HOST=" host
+    if (!seen_port) print "BACKUP_PORT=" port
+    if (!seen_user) print "BACKUP_USER=" user
+    if (!seen_path) print "BACKUP_PATH=" path
+}
+' "$CONFIG" > "$TMP"
+
+chown root:backupmgr "$TMP"
+chmod 0640 "$TMP"
+mv "$TMP" "$CONFIG"

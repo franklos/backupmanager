@@ -63,7 +63,7 @@ $weekDays = [
                     <option
                         value="managed"
                         <?php if ($_['credentialMode'] === 'managed') { print_unescaped('selected'); } ?>>
-                        <?php p($l->t('Request from server administrator')); ?>
+                        <?php p($l->t('Managed backup provider')); ?>
                     </option>
                 </select>
             </div>
@@ -122,7 +122,7 @@ $weekDays = [
                         <?php if ($_['providerConsent']) { print_unescaped('checked'); } ?>>
 
                     <span>
-                        <?php p($l->t('I consent to sending this request to the server administrator')); ?>
+                        <?php p($l->t('I consent to sending this request to the backup provider')); ?>
                     </span>
                 </label>
 
@@ -130,10 +130,17 @@ $weekDays = [
                     <button
                         id="backupstatus-request-provider"
                         type="button"
-                        <?php if ($_['providerRequestSent']) { print_unescaped('disabled'); } ?>>
-                        <?php p($_['providerRequestSent']
+                        <?php if ($_['providerRequestSent'] ?? false) { print_unescaped('disabled'); } ?>>
+                        <?php p(($_['providerRequestSent'] ?? false)
                             ? $l->t('Request sent')
                             : $l->t('Request access')); ?>
+                    </button>
+
+                    <button
+                        id="backupstatus-resend-provider"
+                        type="button"
+                        <?php if (!($_['providerRequestSent'] ?? false)) { print_unescaped('hidden'); } ?>>
+                        <?php p($l->t('Resend notification')); ?>
                     </button>
                 </div>
             </div>
@@ -146,6 +153,58 @@ $weekDays = [
         <div id="backupstatus-s3-fields">
             <p><?php p($l->t('S3-compatible storage configuration will be added later.')); ?></p>
         </div>
+    </div>
+
+    <div class="backupmanager-card">
+        <h3><?php p($l->t('Backup schedule')); ?></h3>
+
+        <fieldset id="backupstatus-schedule">
+            <legend><?php p($l->t('Backup days')); ?></legend>
+
+            <div class="backupstatus-week">
+                <?php foreach ($weekDays as $value => $label): ?>
+                    <label class="backupstatus-day">
+                        <input
+                            type="checkbox"
+                            name="backupstatus-day"
+                            value="<?php p($value); ?>"
+                            <?php if (in_array($value, $_['days'], true)) { print_unescaped('checked'); } ?>>
+
+                        <span><?php p($label); ?></span>
+                    </label>
+                <?php endforeach; ?>
+            </div>
+        </fieldset>
+
+        <div class="backupstatus-field">
+            <label for="backupstatus-time">
+                <?php p($l->t('Start time')); ?>
+            </label>
+
+            <div class="backupstatus-time-wrapper">
+                <input
+                    id="backupstatus-time"
+                    type="time"
+                    value="<?php p($_['time']); ?>">
+            </div>
+        </div>
+    </div>
+
+    <div class="backupstatus-actions">
+        <button
+            id="backupstatus-save"
+            type="button"
+            class="primary">
+            <?php p($l->t('Save and test')); ?>
+        </button>
+
+        <span
+            id="backupstatus-result"
+            class="<?php p($_['connected'] ? 'success' : 'failed'); ?>">
+            <?php p($_['connected']
+                ? $l->t('Connected')
+                : $l->t('Connection failed')); ?>
+        </span>
     </div>
 
     <div class="backupmanager-card backupstatus-recovery">
@@ -241,57 +300,5 @@ $weekDays = [
         <button id="backupstatus-remove-button" type="button" class="warning" disabled>
             <?php p($l->t('Remove Backup Manager')); ?>
         </button>
-    </div>
-
-    <div class="backupmanager-card">
-        <h3><?php p($l->t('Backup schedule')); ?></h3>
-
-        <fieldset id="backupstatus-schedule">
-            <legend><?php p($l->t('Backup days')); ?></legend>
-
-            <div class="backupstatus-week">
-                <?php foreach ($weekDays as $value => $label): ?>
-                    <label class="backupstatus-day">
-                        <input
-                            type="checkbox"
-                            name="backupstatus-day"
-                            value="<?php p($value); ?>"
-                            <?php if (in_array($value, $_['days'], true)) { print_unescaped('checked'); } ?>>
-
-                        <span><?php p($label); ?></span>
-                    </label>
-                <?php endforeach; ?>
-            </div>
-        </fieldset>
-
-        <div class="backupstatus-field">
-            <label for="backupstatus-time">
-                <?php p($l->t('Start time')); ?>
-            </label>
-
-            <div class="backupstatus-time-wrapper">
-                <input
-                    id="backupstatus-time"
-                    type="time"
-                    value="<?php p($_['time']); ?>">
-            </div>
-        </div>
-    </div>
-
-    <div class="backupstatus-actions">
-        <button
-            id="backupstatus-save"
-            type="button"
-            class="primary">
-            <?php p($l->t('Save and test')); ?>
-        </button>
-
-        <span
-            id="backupstatus-result"
-            class="<?php p($_['connected'] ? 'success' : 'failed'); ?>">
-            <?php p($_['connected']
-                ? $l->t('Connected')
-                : $l->t('Connection failed')); ?>
-        </span>
     </div>
 </div>

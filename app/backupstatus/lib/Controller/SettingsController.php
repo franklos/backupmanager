@@ -7,10 +7,12 @@ namespace OCA\BackupStatus\Controller;
 use OCP\AppFramework\Controller;
 use OCP\AppFramework\Http\JSONResponse;
 use OCP\HintException;
+use OCP\Http\Client\IClientService;
 use OCP\IConfig;
 use OCP\IRequest;
 use OCP\IL10N;
 use OCP\Mail\IMailer;
+use OCP\ServerVersion;
 use Throwable;
 
 final class SettingsController extends Controller {
@@ -19,6 +21,8 @@ final class SettingsController extends Controller {
         private IConfig $config,
         private IL10N $l10n,
         private IMailer $mailer,
+        private IClientService $clientService,
+        private ServerVersion $serverVersion,
     ) {
         parent::__construct('backupstatus', $request);
     }
@@ -173,7 +177,7 @@ final class SettingsController extends Controller {
             "source_url" => $sourceUrl,
             "public_key" => $publicKey,
             "client_version" => "0.1.0-beta2",
-            "nextcloud_version" => implode(".", \OC_Util::getVersion()),
+            "nextcloud_version" => $this->serverVersion->getVersionString(),
             "approval_email" => $providerEmail,
         ];
 
@@ -233,6 +237,35 @@ final class SettingsController extends Controller {
                 "provider_request_time",
                 (string)time()
             );
+
+            try {
+                $message = $this->mailer->createMessage();
+                $message->setTo([$providerEmail]);
+                $message->setSubject(
+                    "Backup Manager approval request " . (string)$data["request_id"]
+                );
+                $message->setPlainBody(
+                    "A new Backup Manager client is requesting access.\n\n"
+                    . "Request ID: " . (string)$data["request_id"] . "\n"
+                    . "Source: " . $sourceId . "\n"
+                    . "Source URL: " . $sourceUrl . "\n"
+                    . "SSH fingerprint: " . trim((string)shell_exec(
+                        "printf %s " . escapeshellarg($publicKey)
+                        . " | ssh-keygen -lf - -E sha256 2>/dev/null | awk '{print $2}'"
+                    )) . "\n"
+                    . "Nextcloud version: " . $this->serverVersion->getVersionString() . "\n"
+                    . "Backup Manager version: 0.1.0-beta2\n"
+                    . "Status: pending approval\n\n"
+                    . "This message is only a notification. Approval must be performed on the backup provider."
+                );
+                $this->mailer->send($message);
+            } catch (Throwable $mailError) {
+                $this->config->setAppValue(
+                    "backupstatus",
+                    "provider_notification_error",
+                    $mailError->getMessage()
+                );
+            }
 
             return new JSONResponse([
                 "success" => true,
@@ -333,6 +366,31 @@ final class SettingsController extends Controller {
                     "backup_path",
                     (string)($connection["path"] ?? "")
                 );
+
+
+                $clientId = (string)($connection["client_id"] ?? "");
+                $host = (string)($connection["host"] ?? "");
+                $port = (string)($connection["port"] ?? "22");
+                $user = (string)($connection["user"] ?? "");
+                $path = (string)($connection["path"] ?? "/");
+
+                $command = sprintf(
+                    'sudo /usr/local/sbin/backupmanager-apply-provider-config %s %s %s %s %s',
+                    escapeshellarg($clientId),
+                    escapeshellarg($host),
+                    escapeshellarg($port),
+                    escapeshellarg($user),
+                    escapeshellarg($path)
+                );
+
+                exec($command, $configOutput, $configExitCode);
+
+                if ($configExitCode !== 0) {
+                    return new JSONResponse([
+                        "success" => false,
+                        "error" => "Approved, but local Backup Manager configuration failed",
+                    ], 500);
+                }
             }
 
             return new JSONResponse([
@@ -546,6 +604,134 @@ final class SettingsController extends Controller {
             "localRemovalScheduled" => false,
             "remote" => $remoteResult,
         ]);
+    }
+
+
+    public function resendProviderNotification(): JSONResponse {
+        $providerUrl = rtrim(
+            $this->config->getAppValue("backupstatus", "provider_url", ""),
+            "/"
+        );
+        $providerEmail = trim(
+            $this->config->getAppValue("backupstatus", "provider_email", "")
+        );
+        $requestId = $this->config->getAppValue(
+            "backupstatus",
+            "provider_request_id",
+            ""
+        );
+        $requestToken = $this->config->getAppValue(
+            "backupstatus",
+            "provider_request_token",
+            ""
+        );
+
+        if (
+            $providerUrl === ""
+            || $requestId === ""
+            || $requestToken === ""
+            || filter_var($providerEmail, FILTER_VALIDATE_EMAIL) === false
+        ) {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Provider request information is incomplete",
+            ], 400);
+        }
+
+        try {
+            /*
+             * Haal eerst de actuele request-status bij de provider op.
+             * Resend mag alleen voor een nog pending aanvraag.
+             */
+            $client = $this->clientService->newClient();
+
+            $response = $client->get(
+                $providerUrl . "/api/v1/requests/" . rawurlencode($requestId),
+                [
+                    "headers" => [
+                        "Accept" => "application/json",
+                        "Authorization" => "Bearer " . $requestToken,
+                    ],
+                    "timeout" => 30,
+                ]
+            );
+
+            $data = json_decode((string)$response->getBody(), true);
+
+            if (!is_array($data) || !($data["success"] ?? false)) {
+                return new JSONResponse([
+                    "success" => false,
+                    "error" => "Unable to verify provider request",
+                ], 502);
+            }
+
+            $status = (string)($data["status"] ?? "");
+
+            $this->config->setAppValue(
+                "backupstatus",
+                "provider_request_status",
+                $status
+            );
+
+            if ($status !== "pending") {
+                return new JSONResponse([
+                    "success" => false,
+                    "error" => "Notification can only be resent for a pending request",
+                    "status" => $status,
+                ], 409);
+            }
+
+            $sourceId = (string)($data["source_id"] ?? "");
+            $sourceUrl = (string)($data["source_url"] ?? "");
+
+            $message = $this->mailer->createMessage();
+            $message->setTo([$providerEmail]);
+            $message->setSubject(
+                "Backup Manager approval request " . $requestId
+            );
+
+            $message->setPlainBody(
+                "A Backup Manager client is awaiting approval.\n\n"
+                . "Request ID: " . $requestId . "\n"
+                . "Source: " . $sourceId . "\n"
+                . "Source URL: " . $sourceUrl . "\n"
+                . "Nextcloud version: " . $this->serverVersion->getVersionString() . "\n"
+                . "Backup Manager version: 0.1.0-beta2\n"
+                . "Status: pending approval\n\n"
+                . "This is a notification only. Approval must be performed on the backup provider."
+            );
+
+            $this->mailer->send($message);
+
+            $this->config->deleteAppValue(
+                "backupstatus",
+                "provider_notification_error"
+            );
+
+            $this->config->setAppValue(
+                "backupstatus",
+                "provider_notification_time",
+                (string)time()
+            );
+
+            return new JSONResponse([
+                "success" => true,
+                "requestId" => $requestId,
+                "status" => "pending",
+                "notificationSent" => true,
+            ]);
+        } catch (Throwable $e) {
+            $this->config->setAppValue(
+                "backupstatus",
+                "provider_notification_error",
+                $e->getMessage()
+            );
+
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Notification could not be sent: " . $e->getMessage(),
+            ], 502);
+        }
     }
 
 

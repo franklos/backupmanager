@@ -308,7 +308,7 @@ final class RequestController
                     'host' => $connectionData['storage_host'],
                     'port' => (int)$connectionData['storage_port'],
                     'user' => $connectionData['storage_user'],
-                    'path' => $connectionData['storage_path'],
+                    'path' => '/',
                 ];
             }
         }

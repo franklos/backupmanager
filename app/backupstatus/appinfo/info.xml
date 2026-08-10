@@ -11,9 +11,13 @@
     <namespace>BackupStatus</namespace>
     <category>tools</category>
     <dependencies>
-        <php min-version="8.1"/>
-        <nextcloud min-version="32" max-version="34"/>
+        <nextcloud min-version="34" max-version="34"/>
     </dependencies>
+    <navigation>
+        <name>Backup</name>
+        <route>backupstatus.page.index</route>
+        <order>35</order>
+    </navigation>
     <settings>
         <admin>OCA\BackupStatus\Settings\AdminSettings</admin>
         <admin-section>OCA\BackupStatus\Settings\AdminSection</admin-section>
