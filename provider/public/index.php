@@ -50,6 +50,12 @@ try {
 
     $router->add(
         'GET',
+        '#^/api/v1/clients/(BM-[0-9]{6})/status/?$#',
+        [$requestController, 'clientStatus']
+    );
+
+    $router->add(
+        'GET',
         '#^/api/v1/requests/([A-Za-z0-9-]+)/?$#',
         [$requestController, 'status']
     );

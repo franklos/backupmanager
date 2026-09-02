@@ -1,0 +1,25 @@
+#!/bin/sh
+set -eu
+
+CLIENT_ID="${1:-}"
+
+case "$CLIENT_ID" in
+    BM-[0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+    *)
+        echo "Invalid client id" >&2
+        exit 1
+        ;;
+esac
+
+ROOT=/var/lib/backupmanager-provider
+TARGET="$ROOT/$CLIENT_ID"
+
+if [ ! -d "$TARGET" ]; then
+    echo "Storage not found" >&2
+    exit 2
+fi
+
+df -B1 --output=size,used,avail "$TARGET" | awk '
+NR == 2 {
+    printf "capacity_bytes=%s\nused_bytes=%s\nfree_bytes=%s\n", $1, $2, $3
+}'

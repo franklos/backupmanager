@@ -463,6 +463,124 @@ final class RequestController
     }
 
 
+    public function clientStatus(string $clientId): never
+    {
+        $token = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+
+        if (!str_starts_with($token, 'Bearer ')) {
+            Response::json([
+                'success' => false,
+                'error' => 'Missing bearer token',
+            ], 401);
+        }
+
+        $requestToken = trim(substr($token, 7));
+
+        if ($requestToken === '') {
+            Response::json([
+                'success' => false,
+                'error' => 'Invalid bearer token',
+            ], 401);
+        }
+
+        $pdo = $this->database->pdo();
+
+        $client = $pdo->prepare(
+            'SELECT
+                c.client_id,
+                pr.request_token_hash
+             FROM clients c
+             JOIN provider_requests pr
+               ON pr.source_id = c.source_id
+              AND pr.status = "approved"
+             WHERE c.client_id = :client_id
+               AND c.status = "active"
+             ORDER BY pr.id DESC
+             LIMIT 1'
+        );
+
+        $client->execute([
+            'client_id' => $clientId,
+        ]);
+
+        $clientData = $client->fetch();
+
+        if (!is_array($clientData)) {
+            Response::json([
+                'success' => false,
+                'error' => 'Client not found',
+            ], 404);
+        }
+
+        if (!hash_equals(
+            (string)$clientData['request_token_hash'],
+            hash('sha256', $requestToken)
+        )) {
+            Response::json([
+                'success' => false,
+                'error' => 'Invalid bearer token',
+            ], 403);
+        }
+
+        $command = sprintf(
+            'sudo -n /usr/local/sbin/backupmanager-storage-usage %s',
+            escapeshellarg($clientId)
+        );
+
+        $output = [];
+        $exitCode = 0;
+        exec($command, $output, $exitCode);
+
+        if ($exitCode !== 0) {
+            Response::json([
+                'success' => false,
+                'status' => 'unavailable',
+                'error' => 'Unable to determine storage status',
+            ], 503);
+        }
+
+        $storage = [];
+
+        foreach ($output as $line) {
+            if (!str_contains($line, '=')) {
+                continue;
+            }
+
+            [$key, $value] = explode('=', $line, 2);
+
+            if (in_array($key, [
+                'capacity_bytes',
+                'used_bytes',
+                'free_bytes',
+            ], true) && ctype_digit($value)) {
+                $storage[$key] = (int)$value;
+            }
+        }
+
+        if (
+            !isset(
+                $storage['capacity_bytes'],
+                $storage['used_bytes'],
+                $storage['free_bytes']
+            )
+        ) {
+            Response::json([
+                'success' => false,
+                'status' => 'unavailable',
+                'error' => 'Invalid storage status',
+            ], 503);
+        }
+
+        Response::json([
+            'success' => true,
+            'status' => 'connected',
+            'capacity_bytes' => $storage['capacity_bytes'],
+            'used_bytes' => $storage['used_bytes'],
+            'free_bytes' => $storage['free_bytes'],
+        ]);
+    }
+
+
     private function fingerprint(string $publicKey): ?string
     {
         $parts = preg_split('/\s+/', trim($publicKey));
