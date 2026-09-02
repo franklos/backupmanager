@@ -14,6 +14,7 @@ TARGET="$ROOT/$CLIENT_ID"
 install -d -o backupstore -g backupstore -m 2770 "$TARGET"
 install -d -o backupstore -g backupstore -m 2770 "$TARGET/data"
 install -d -o backupstore -g backupstore -m 2770 "$TARGET/database"
+install -d -o backupstore -g backupstore -m 2770 "$TARGET/config"
 
 chown backupstore:backupstore \
     "$TARGET" \

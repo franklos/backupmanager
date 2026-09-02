@@ -1,0 +1,41 @@
+#!/bin/sh
+set -eu
+
+SOURCE="${1:-}"
+
+case "$SOURCE" in
+    /tmp/bm-restore-*) ;;
+    *) echo "Invalid source file" >&2; exit 1 ;;
+esac
+
+[ -f "$SOURCE" ] || {
+    echo "Source file not found" >&2
+    exit 1
+}
+
+LINE="$(cat "$SOURCE")"
+
+CLIENT_ID="$(printf '%s\n' "$LINE" |
+    sed -n 's/.* bm-restore=\(BM-[0-9][0-9][0-9][0-9][0-9][0-9]\)$/\1/p')"
+
+[ -n "$CLIENT_ID" ] || {
+    echo "Invalid restore marker" >&2
+    exit 1
+}
+
+SSH_DIR=/var/lib/backupmanager-provider/.ssh
+AUTHORIZED="$SSH_DIR/authorized_keys"
+TMP="$(mktemp "$SSH_DIR/.authorized_keys.XXXXXX")"
+
+if [ -f "$AUTHORIZED" ]; then
+    awk -v marker="bm-restore=$CLIENT_ID" '
+        index($0, marker) == 0 { print }
+    ' "$AUTHORIZED" > "$TMP"
+fi
+
+printf '%s\n' "$LINE" >> "$TMP"
+
+chown backupstore:backupstore "$TMP"
+chmod 600 "$TMP"
+mv "$TMP" "$AUTHORIZED"
+rm -f "$SOURCE"

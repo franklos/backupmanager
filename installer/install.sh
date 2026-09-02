@@ -120,6 +120,12 @@ fi
 
 cat > /etc/sudoers.d/backupmanager <<'EOF'
 www-data ALL=(root) NOPASSWD: /usr/local/sbin/backupmanager-request-info
+www-data ALL=(backupmgr) NOPASSWD: /usr/local/sbin/backupmanager-list-backups
+www-data ALL=(root) NOPASSWD: /usr/local/sbin/backupmanager-restore-data restore
+www-data ALL=(root) NOPASSWD: /usr/local/sbin/backupmanager-restore-database restore *
+www-data ALL=(root) NOPASSWD: /usr/local/sbin/backupmanager-restore-complete *
+www-data ALL=(root) NOPASSWD: /usr/local/sbin/backupmanager-disaster-recovery verify *
+www-data ALL=(root) NOPASSWD: /usr/local/sbin/backupmanager-disaster-recovery restore *
 www-data ALL=(root) NOPASSWD: /usr/local/sbin/backupmanager-schedule *
 www-data ALL=(root) NOPASSWD: /usr/local/sbin/backupmanager-test-connection *
 www-data ALL=(root) NOPASSWD: /usr/local/sbin/backupmanager-apply-provider-config *

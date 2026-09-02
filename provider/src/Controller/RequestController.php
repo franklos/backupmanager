@@ -482,4 +482,325 @@ final class RequestController
             '='
         );
     }
+
+    public function createRecovery(): never
+    {
+        try {
+            $raw = file_get_contents('php://input');
+            $input = json_decode($raw ?: '', true);
+
+            if (!is_array($input)) {
+                Response::json([
+                    'success' => false,
+                    'error' => 'Invalid JSON request',
+                ], 400);
+            }
+
+            $clientId = trim((string)($input['client_id'] ?? ''));
+            $sourceId = trim((string)($input['source_id'] ?? ''));
+            $publicKey = trim((string)($input['public_key'] ?? ''));
+
+            if (preg_match('/^BM-[0-9]{6}$/', $clientId) !== 1) {
+                Response::json([
+                    'success' => false,
+                    'error' => 'Valid client_id is required',
+                ], 400);
+            }
+
+            if ($sourceId === '') {
+                Response::json([
+                    'success' => false,
+                    'error' => 'source_id is required',
+                ], 400);
+            }
+
+            if (
+                !str_starts_with($publicKey, 'ssh-ed25519 ')
+                && !str_starts_with($publicKey, 'ssh-rsa ')
+                && !str_starts_with($publicKey, 'ecdsa-sha2-')
+            ) {
+                Response::json([
+                    'success' => false,
+                    'error' => 'Valid SSH public key is required',
+                ], 400);
+            }
+
+            $fingerprint = $this->fingerprint($publicKey);
+
+            if ($fingerprint === null) {
+                Response::json([
+                    'success' => false,
+                    'error' => 'Unable to calculate SSH fingerprint',
+                ], 400);
+            }
+
+            $pdo = $this->database->pdo();
+
+            $client = $pdo->prepare(
+                'SELECT client_id, source_id, status
+                 FROM clients
+                 WHERE client_id = :client_id
+                 LIMIT 1'
+            );
+
+            $client->execute([
+                'client_id' => $clientId,
+            ]);
+
+            $clientData = $client->fetch();
+
+            if (!is_array($clientData) || $clientData['status'] !== 'active') {
+                Response::json([
+                    'success' => false,
+                    'error' => 'Active client not found',
+                ], 404);
+            }
+
+            $existing = $pdo->prepare(
+                'SELECT recovery_request_id
+                 FROM recovery_requests
+                 WHERE client_id = :client_id
+                   AND status = "pending"
+                 LIMIT 1'
+            );
+
+            $existing->execute([
+                'client_id' => $clientId,
+            ]);
+
+            $existingRequest = $existing->fetch();
+
+            if (is_array($existingRequest)) {
+                Response::json([
+                    'success' => false,
+                    'error' => 'A recovery request is already pending',
+                ], 409);
+            }
+
+            $requestId =
+                'REC-' . gmdate('Ymd') . '-' . strtoupper(bin2hex(random_bytes(3)));
+
+            $requestToken = bin2hex(random_bytes(32));
+            $requestTokenHash = hash('sha256', $requestToken);
+
+            $expiryHours = max(
+                1,
+                (int)$this->config->get('api', 'request_expiry_hours', 24)
+            );
+
+            $expiresAt = gmdate(
+                'Y-m-d H:i:s',
+                time() + ($expiryHours * 3600)
+            );
+
+            $pdo->beginTransaction();
+
+            $insert = $pdo->prepare(
+                'INSERT INTO recovery_requests (
+                    recovery_request_id,
+                    request_token_hash,
+                    client_id,
+                    source_id,
+                    public_key,
+                    ssh_fingerprint,
+                    status,
+                    expires_at,
+                    requester_ip
+                 ) VALUES (
+                    :recovery_request_id,
+                    :request_token_hash,
+                    :client_id,
+                    :source_id,
+                    :public_key,
+                    :ssh_fingerprint,
+                    "pending",
+                    :expires_at,
+                    :requester_ip
+                 )'
+            );
+
+            $insert->execute([
+                'recovery_request_id' => $requestId,
+                'request_token_hash' => $requestTokenHash,
+                'client_id' => $clientId,
+                'source_id' => $sourceId,
+                'public_key' => $publicKey,
+                'ssh_fingerprint' => $fingerprint,
+                'expires_at' => $expiresAt,
+                'requester_ip' => $_SERVER['REMOTE_ADDR'] ?? null,
+            ]);
+
+            $event = $pdo->prepare(
+                'INSERT INTO provider_events (
+                    actor_type,
+                    actor_id,
+                    client_id,
+                    event_type,
+                    severity,
+                    details,
+                    remote_ip
+                 ) VALUES (
+                    "client",
+                    :actor_id,
+                    :client_id,
+                    "recovery.requested",
+                    "security",
+                    :details,
+                    :remote_ip
+                 )'
+            );
+
+            $event->execute([
+                'actor_id' => $sourceId,
+                'client_id' => $clientId,
+                'details' => json_encode([
+                    'recovery_request_id' => $requestId,
+                    'ssh_fingerprint' => $fingerprint,
+                ], JSON_UNESCAPED_SLASHES),
+                'remote_ip' => $_SERVER['REMOTE_ADDR'] ?? null,
+            ]);
+
+            $pdo->commit();
+
+            Response::json([
+                'success' => true,
+                'recovery_request_id' => $requestId,
+                'request_token' => $requestToken,
+                'status' => 'pending',
+                'expires_at' => $expiresAt,
+            ], 201);
+
+        } catch (Throwable $e) {
+            if (isset($pdo) && $pdo instanceof PDO && $pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+
+            Response::json([
+                'success' => false,
+                'error' => 'Internal server error',
+            ], 500);
+        }
+    }
+
+    public function recoveryStatus(string $requestId): never
+    {
+        $token = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+
+        if (!str_starts_with($token, 'Bearer ')) {
+            Response::json([
+                'success' => false,
+                'error' => 'Missing bearer token',
+            ], 401);
+        }
+
+        $requestToken = trim(substr($token, 7));
+
+        $statement = $this->database->pdo()->prepare(
+            'SELECT
+                recovery_request_id,
+                request_token_hash,
+                client_id,
+                source_id,
+                status,
+                requested_at,
+                approved_at,
+                rejected_at,
+                expires_at
+             FROM recovery_requests
+             WHERE recovery_request_id = :request_id
+             LIMIT 1'
+        );
+
+        $statement->execute([
+            'request_id' => $requestId,
+        ]);
+
+        $request = $statement->fetch();
+
+        if (!is_array($request)) {
+            Response::json([
+                'success' => false,
+                'error' => 'Recovery request not found',
+            ], 404);
+        }
+
+        if (!hash_equals(
+            (string)$request['request_token_hash'],
+            hash('sha256', $requestToken)
+        )) {
+            Response::json([
+                'success' => false,
+                'error' => 'Invalid bearer token',
+            ], 403);
+        }
+
+        if (
+            $request['status'] === 'pending'
+            && !empty($request['expires_at'])
+            && strtotime((string)$request['expires_at']) < time()
+        ) {
+            $update = $this->database->pdo()->prepare(
+                'UPDATE recovery_requests
+                 SET status = "expired"
+                 WHERE recovery_request_id = :request_id
+                   AND status = "pending"'
+            );
+
+            $update->execute([
+                'request_id' => $requestId,
+            ]);
+
+            $request['status'] = 'expired';
+        }
+
+        $response = [
+            'success' => true,
+            'recovery_request_id' => $request['recovery_request_id'],
+            'client_id' => $request['client_id'],
+            'source_id' => $request['source_id'],
+            'status' => $request['status'],
+            'requested_at' => $request['requested_at'],
+            'approved_at' => $request['approved_at'],
+            'rejected_at' => $request['rejected_at'],
+            'expires_at' => $request['expires_at'],
+        ];
+
+        if ($request['status'] === 'approved') {
+            $connection = $this->database->pdo()->prepare(
+                'SELECT
+                    c.client_id,
+                    s.storage_host,
+                    s.storage_port,
+                    s.storage_user
+                 FROM clients c
+                 JOIN storage_allocations s
+                   ON s.client_id = c.client_id
+                  AND s.status = "active"
+                  AND s.destination_type = "ssh"
+                 WHERE c.client_id = :client_id
+                   AND c.status = "active"
+                 LIMIT 1'
+            );
+
+            $connection->execute([
+                'client_id' => $request['client_id'],
+            ]);
+
+            $connectionData = $connection->fetch();
+
+            if (is_array($connectionData)) {
+                $response['connection'] = [
+                    'client_id' => $connectionData['client_id'],
+                    'host' => $connectionData['storage_host'],
+                    'port' => (int)$connectionData['storage_port'],
+                    'user' => $connectionData['storage_user'],
+                    'path' => '/',
+                ];
+            }
+        }
+
+        Response::json($response);
+    }
+
+
 }

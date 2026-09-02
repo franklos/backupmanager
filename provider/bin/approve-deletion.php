@@ -129,50 +129,15 @@ try {
         }
     }
 
-    $tmp = tempnam('/tmp', 'bm-del-auth-');
-
-    if ($tmp === false) {
-        throw new RuntimeException('Unable to create temporary authorized_keys file');
-    }
-
-    $authorizedKeys = '/var/lib/backupmanager-provider/.ssh/authorized_keys';
-
-    $command = sprintf(
-        'sudo awk %s %s > %s',
-        escapeshellarg('index($0, "bm-client=' . $clientId . '") == 0 { print }'),
-        escapeshellarg($authorizedKeys),
-        escapeshellarg($tmp)
+    $removeAuthorizedKey = sprintf(
+        'sudo /usr/local/sbin/backupmanager-remove-authorized-key %s',
+        escapeshellarg($clientId)
     );
 
-    exec($command, $output, $exitCode);
+    exec($removeAuthorizedKey, $output, $exitCode);
 
     if ($exitCode !== 0) {
-        @unlink($tmp);
-        throw new RuntimeException('Unable to prepare authorized_keys update');
-    }
-
-    $install = sprintf(
-        'sudo /usr/local/sbin/backupmanager-install-authorized-keys %s',
-        escapeshellarg($tmp)
-    );
-
-    /*
-     * De bestaande helper verwacht een bm-client marker en is bedoeld
-     * voor toevoegen/vervangen, niet voor verwijderen.
-     * Daarom installeren we het gefilterde bestand hier direct.
-     */
-    $install = sprintf(
-        'sudo install -o backupstore -g backupstore -m 600 %s %s && sudo rm -f %s',
-        escapeshellarg($tmp),
-        escapeshellarg($authorizedKeys),
-        escapeshellarg($tmp)
-    );
-
-    exec($install, $output, $exitCode);
-
-    if ($exitCode !== 0) {
-        @unlink($tmp);
-        throw new RuntimeException('Unable to update authorized_keys');
+        throw new RuntimeException('Unable to remove authorized SSH key');
     }
 
     $revokeKey = $pdo->prepare(

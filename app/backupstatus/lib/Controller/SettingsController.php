@@ -797,4 +797,543 @@ final class SettingsController extends Controller {
 
         return proc_close($process) === 0;
     }
+
+    public function restoreInventory(): JSONResponse {
+        $process = proc_open(
+            ["sudo", "-n", "-u", "backupmgr", "/usr/local/sbin/backupmanager-list-backups"],
+            [
+                1 => ["pipe", "w"],
+                2 => ["pipe", "w"],
+            ],
+            $pipes
+        );
+
+        if (!is_resource($process)) {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Restore inventory helper could not be started",
+            ], 500);
+        }
+
+        $output = (string)stream_get_contents($pipes[1]);
+        $error = trim((string)stream_get_contents($pipes[2]));
+
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+
+        $exitCode = proc_close($process);
+
+        if ($exitCode !== 0) {
+            return new JSONResponse([
+                "success" => false,
+                "error" => $error !== "" ? $error : "Restore inventory unavailable",
+            ], 500);
+        }
+
+        $section = "";
+        $data = [];
+        $database = [];
+
+        foreach (preg_split('/\R/', trim($output)) as $line) {
+            $line = trim($line);
+
+            if ($line === "DATA") {
+                $section = "data";
+                continue;
+            }
+
+            if ($line === "DATABASE") {
+                $section = "database";
+                continue;
+            }
+
+            if ($line === "") {
+                continue;
+            }
+
+            if ($section === "data") {
+                $data[] = $line;
+            } elseif ($section === "database") {
+                $database[] = $line;
+            }
+        }
+
+        return new JSONResponse([
+            "success" => true,
+            "data" => $data,
+            "database" => $database,
+        ]);
+    }
+
+
+
+    public function restoreExecute(
+        string $type = "",
+        string $databaseBackup = "",
+        string $confirm = ""
+    ): JSONResponse {
+        if ($confirm !== "RESTORE") {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Restore confirmation required",
+            ], 400);
+        }
+
+        if (!in_array($type, ["data", "database", "complete"], true)) {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Invalid restore type",
+            ], 400);
+        }
+
+        if (
+            in_array($type, ["database", "complete"], true)
+            && preg_match(
+                '/^nextcloud-db-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}\.sql\.gz$/',
+                $databaseBackup
+            ) !== 1
+        ) {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Invalid database backup",
+            ], 400);
+        }
+
+        if ($type === "data") {
+            $command = [
+                "sudo",
+                "-n",
+                "/usr/local/sbin/backupmanager-restore-data",
+                "restore",
+            ];
+        } elseif ($type === "database") {
+            $command = [
+                "sudo",
+                "-n",
+                "/usr/local/sbin/backupmanager-restore-database",
+                "restore",
+                $databaseBackup,
+            ];
+        } else {
+            $command = [
+                "sudo",
+                "-n",
+                "/usr/local/sbin/backupmanager-restore-complete",
+                $databaseBackup,
+            ];
+        }
+
+        $process = proc_open(
+            $command,
+            [
+                1 => ["pipe", "w"],
+                2 => ["pipe", "w"],
+            ],
+            $pipes
+        );
+
+        if (!is_resource($process)) {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Restore process could not be started",
+            ], 500);
+        }
+
+        $output = trim((string)stream_get_contents($pipes[1]));
+        $error = trim((string)stream_get_contents($pipes[2]));
+
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+
+        $exitCode = proc_close($process);
+
+        if ($exitCode !== 0) {
+            return new JSONResponse([
+                "success" => false,
+                "error" => $error !== "" ? $error : "Restore failed",
+                "output" => $output,
+            ], 500);
+        }
+
+        return new JSONResponse([
+            "success" => true,
+            "type" => $type,
+            "databaseBackup" => $databaseBackup,
+            "output" => $output,
+        ]);
+    }
+
+
+
+    public function disasterRecovery(
+        string $mode = "",
+        string $databaseBackup = "",
+        string $confirm = ""
+    ): JSONResponse {
+        if (!in_array($mode, ["verify", "restore"], true)) {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Invalid disaster recovery mode",
+            ], 400);
+        }
+
+        if (
+            preg_match(
+                '/^nextcloud-db-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}\.sql\.gz$/',
+                $databaseBackup
+            ) !== 1
+        ) {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Invalid database backup",
+            ], 400);
+        }
+
+        if ($mode === "restore" && $confirm !== "RESTORE") {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Disaster recovery confirmation required",
+            ], 400);
+        }
+
+        $command = [
+            "sudo",
+            "-n",
+            "/usr/local/sbin/backupmanager-disaster-recovery",
+            $mode,
+            $databaseBackup,
+        ];
+
+        $process = proc_open(
+            $command,
+            [
+                1 => ["pipe", "w"],
+                2 => ["pipe", "w"],
+            ],
+            $pipes
+        );
+
+        if (!is_resource($process)) {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Disaster recovery process could not be started",
+            ], 500);
+        }
+
+        $output = trim((string)stream_get_contents($pipes[1]));
+        $error = trim((string)stream_get_contents($pipes[2]));
+
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+
+        $exitCode = proc_close($process);
+
+        if ($exitCode !== 0) {
+            return new JSONResponse([
+                "success" => false,
+                "error" => $error !== "" ? $error : "Disaster recovery failed",
+                "output" => $output,
+            ], 500);
+        }
+
+        return new JSONResponse([
+            "success" => true,
+            "mode" => $mode,
+            "databaseBackup" => $databaseBackup,
+            "output" => $output,
+        ]);
+    }
+
+
+
+    public function requestRecovery(
+        string $clientId = ""
+    ): JSONResponse {
+        $providerUrl = rtrim(
+            $this->config->getAppValue("backupstatus", "provider_url", ""),
+            "/"
+        );
+
+        if ($providerUrl === "") {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "No provider URL configured",
+            ], 400);
+        }
+
+        $clientId = trim($clientId);
+
+        if ($clientId === "") {
+            $clientId = $this->config->getAppValue(
+                "backupstatus",
+                "provider_client_id",
+                ""
+            );
+        }
+
+        if (preg_match('/^BM-[0-9]{6}$/', $clientId) !== 1) {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Valid Backup Manager client ID required",
+            ], 400);
+        }
+
+        $process = proc_open(
+            ["sudo", "-n", "/usr/local/sbin/backupmanager-recovery-request-info"],
+            [
+                1 => ["pipe", "w"],
+                2 => ["pipe", "w"],
+            ],
+            $pipes
+        );
+
+        if (!is_resource($process)) {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Recovery helper could not be started",
+            ], 500);
+        }
+
+        $output = trim((string)stream_get_contents($pipes[1]));
+        $error = trim((string)stream_get_contents($pipes[2]));
+
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+
+        if (proc_close($process) !== 0) {
+            return new JSONResponse([
+                "success" => false,
+                "error" => $error !== "" ? $error : "Recovery information unavailable",
+            ], 500);
+        }
+
+        $parts = explode("\t", $output, 2);
+
+        if (count($parts) !== 2) {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Invalid recovery information",
+            ], 500);
+        }
+
+        [$sourceId, $publicKey] = $parts;
+
+        $payload = [
+            "client_id" => $clientId,
+            "source_id" => $sourceId,
+            "public_key" => $publicKey,
+        ];
+
+        try {
+            $client = $this->clientService->newClient();
+
+            $response = $client->post(
+                $providerUrl . "/api/v1/recovery-requests",
+                [
+                    "headers" => [
+                        "Accept" => "application/json",
+                        "Content-Type" => "application/json",
+                    ],
+                    "body" => json_encode(
+                        $payload,
+                        JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+                    ),
+                    "timeout" => 30,
+                ]
+            );
+
+            $data = json_decode((string)$response->getBody(), true);
+
+            if (
+                !is_array($data)
+                || !($data["success"] ?? false)
+                || empty($data["recovery_request_id"])
+                || empty($data["request_token"])
+            ) {
+                return new JSONResponse([
+                    "success" => false,
+                    "error" => "Invalid recovery response from backup provider",
+                ], 502);
+            }
+
+            $this->config->setAppValue(
+                "backupstatus",
+                "recovery_request_id",
+                (string)$data["recovery_request_id"]
+            );
+
+            $this->config->setAppValue(
+                "backupstatus",
+                "recovery_request_token",
+                (string)$data["request_token"]
+            );
+
+            $this->config->setAppValue(
+                "backupstatus",
+                "recovery_request_status",
+                (string)($data["status"] ?? "pending")
+            );
+
+            $this->config->setAppValue(
+                "backupstatus",
+                "recovery_client_id",
+                $clientId
+            );
+
+            return new JSONResponse([
+                "success" => true,
+                "requestId" => $data["recovery_request_id"],
+                "status" => $data["status"] ?? "pending",
+                "clientId" => $clientId,
+            ]);
+
+        } catch (Throwable $e) {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Recovery request failed: " . $e->getMessage(),
+            ], 502);
+        }
+    }
+
+
+
+    public function recoveryStatus(): JSONResponse {
+        $providerUrl = rtrim(
+            $this->config->getAppValue("backupstatus", "provider_url", ""),
+            "/"
+        );
+
+        $requestId = $this->config->getAppValue(
+            "backupstatus",
+            "recovery_request_id",
+            ""
+        );
+
+        $requestToken = $this->config->getAppValue(
+            "backupstatus",
+            "recovery_request_token",
+            ""
+        );
+
+        if ($providerUrl === "" || $requestId === "" || $requestToken === "") {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "No recovery request available",
+            ], 404);
+        }
+
+        try {
+            $client = $this->clientService->newClient();
+
+            $response = $client->get(
+                $providerUrl . "/api/v1/recovery-requests/" . rawurlencode($requestId),
+                [
+                    "headers" => [
+                        "Accept" => "application/json",
+                        "Authorization" => "Bearer " . $requestToken,
+                    ],
+                    "timeout" => 30,
+                ]
+            );
+
+            $data = json_decode((string)$response->getBody(), true);
+
+            if (!is_array($data) || !($data["success"] ?? false)) {
+                return new JSONResponse([
+                    "success" => false,
+                    "error" => "Invalid recovery status response from backup provider",
+                ], 502);
+            }
+
+            $status = (string)($data["status"] ?? "unknown");
+
+            $this->config->setAppValue(
+                "backupstatus",
+                "recovery_request_status",
+                $status
+            );
+
+            if ($status === "approved") {
+                $alreadyActivated = $this->config->getAppValue(
+                    "backupstatus",
+                    "recovery_key_activated",
+                    "0"
+                ) === "1";
+
+                if (!$alreadyActivated) {
+                    $command =
+                        'sudo -n /usr/local/sbin/backupmanager-activate-recovery-key';
+
+                    exec($command, $output, $exitCode);
+
+                    if ($exitCode !== 0) {
+                        return new JSONResponse([
+                            "success" => false,
+                            "error" => "Recovery approved, but replacement key activation failed",
+                        ], 500);
+                    }
+
+                    $this->config->setAppValue(
+                        "backupstatus",
+                        "recovery_key_activated",
+                        "1"
+                    );
+                }
+
+                if (isset($data["connection"]) && is_array($data["connection"])) {
+                    $connection = $data["connection"];
+
+                    $clientId = (string)($connection["client_id"] ?? "");
+                    $host = (string)($connection["host"] ?? "");
+                    $port = (string)($connection["port"] ?? "22");
+                    $user = (string)($connection["user"] ?? "");
+                    $path = (string)($connection["path"] ?? "/");
+
+                    $command = sprintf(
+                        'sudo /usr/local/sbin/backupmanager-apply-provider-config %s %s %s %s %s',
+                        escapeshellarg($clientId),
+                        escapeshellarg($host),
+                        escapeshellarg($port),
+                        escapeshellarg($user),
+                        escapeshellarg($path)
+                    );
+
+                    exec($command, $configOutput, $configExitCode);
+
+                    if ($configExitCode !== 0) {
+                        return new JSONResponse([
+                            "success" => false,
+                            "error" => "Recovery approved, but provider configuration failed",
+                        ], 500);
+                    }
+
+                    $this->config->setAppValue(
+                        "backupstatus",
+                        "provider_client_id",
+                        $clientId
+                    );
+                }
+            }
+
+            return new JSONResponse([
+                "success" => true,
+                "status" => $status,
+                "requestId" => $requestId,
+                "connection" => $data["connection"] ?? null,
+                "activated" => $this->config->getAppValue(
+                    "backupstatus",
+                    "recovery_key_activated",
+                    "0"
+                ) === "1",
+            ]);
+
+        } catch (Throwable $e) {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Recovery status check failed: " . $e->getMessage(),
+            ], 502);
+        }
+    }
+
+
 }

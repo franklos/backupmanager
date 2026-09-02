@@ -1,0 +1,41 @@
+#!/bin/bash
+set -euo pipefail
+
+CONFIG=/etc/backupmanager/backupmanager.conf
+
+[ -r "$CONFIG" ] || {
+    echo "Backup Manager config not readable" >&2
+    exit 2
+}
+
+# shellcheck disable=SC1090
+source "$CONFIG"
+
+RESTORE_KEY="${SSH_KEY}_restore"
+
+[ -r "$RESTORE_KEY" ] || {
+    echo "Restore key not available" >&2
+    exit 3
+}
+
+SSH_OPTS=(
+    -i "$RESTORE_KEY"
+    -p "$BACKUP_PORT"
+    -o BatchMode=yes
+    -o UserKnownHostsFile="$(dirname "$SSH_KEY")/known_hosts"
+    -o ConnectTimeout=10
+)
+
+echo "DATA"
+rsync --list-only \
+    -e "ssh ${SSH_OPTS[*]}" \
+    "${BACKUP_USER}@${BACKUP_HOST}:${BACKUP_PATH%/}/data/" \
+    2>/dev/null | tail -n 1 || true
+
+echo "DATABASE"
+rsync --list-only \
+    -e "ssh ${SSH_OPTS[*]}" \
+    "${BACKUP_USER}@${BACKUP_HOST}:${BACKUP_PATH%/}/database/" \
+    2>/dev/null \
+    | awk '/nextcloud-db-.*\.sql\.gz$/ {print $NF}' \
+    | sort -r

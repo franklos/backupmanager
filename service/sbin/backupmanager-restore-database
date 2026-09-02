@@ -1,0 +1,118 @@
+#!/bin/bash
+set -euo pipefail
+
+MODE="${1:-}"
+BACKUP_FILE="${2:-}"
+
+if [[ "$MODE" != "verify" && "$MODE" != "restore" ]]; then
+    echo "Usage: backupmanager-restore-database {verify|restore} BACKUP_FILE" >&2
+    exit 2
+fi
+
+case "$BACKUP_FILE" in
+    nextcloud-db-*.sql.gz) ;;
+    *)
+        echo "Invalid backup filename" >&2
+        exit 2
+        ;;
+esac
+
+CONFIG=/etc/backupmanager/backupmanager.conf
+
+[[ -r "$CONFIG" ]] || {
+    echo "Backup Manager config not readable" >&2
+    exit 2
+}
+
+# shellcheck disable=SC1090
+source "$CONFIG"
+
+RESTORE_KEY="${SSH_KEY}_restore"
+
+[[ -r "$RESTORE_KEY" ]] || {
+    echo "Restore key not available" >&2
+    exit 3
+}
+
+NC_CONFIG="${NC_PATH%/}/config/config.php"
+
+[[ -r "$NC_CONFIG" ]] || {
+    echo "Nextcloud config not readable: $NC_CONFIG" >&2
+    exit 4
+}
+
+mapfile -t NC_DB_CONFIG < <(
+    php -r '
+        include $argv[1];
+        foreach (["dbhost", "dbname", "dbuser", "dbpassword"] as $key) {
+            echo (string)($CONFIG[$key] ?? ""), PHP_EOL;
+        }
+    ' "$NC_CONFIG"
+)
+
+DB_HOST="${NC_DB_CONFIG[0]:-localhost}"
+DB_NAME="${NC_DB_CONFIG[1]:-}"
+DB_USER="${NC_DB_CONFIG[2]:-}"
+DB_PASSWORD="${NC_DB_CONFIG[3]:-}"
+
+[[ -n "$DB_NAME" && -n "$DB_USER" ]] || {
+    echo "Incomplete database configuration" >&2
+    exit 5
+}
+
+RESTORE_DIR=/var/lib/backupmanager/restore
+mkdir -p "$RESTORE_DIR"
+
+LOCAL_FILE="$RESTORE_DIR/$BACKUP_FILE"
+
+SSH_OPTS="-i $RESTORE_KEY -p $BACKUP_PORT -o BatchMode=yes -o UserKnownHostsFile=$(dirname "$RESTORE_KEY")/known_hosts -o ConnectTimeout=10"
+
+echo "Downloading database backup: $BACKUP_FILE"
+
+rsync \
+    -rt \
+    --no-owner \
+    --no-group \
+    --no-perms \
+    -e "ssh $SSH_OPTS" \
+    "${BACKUP_USER}@${BACKUP_HOST}:${BACKUP_PATH%/}/database/$BACKUP_FILE" \
+    "$LOCAL_FILE"
+
+echo "Checking gzip integrity"
+gzip -t "$LOCAL_FILE"
+
+if [[ "$MODE" == "verify" ]]; then
+    echo "Database backup downloaded and verified"
+    echo "Local file: $LOCAL_FILE"
+    exit 0
+fi
+
+MAINTENANCE_ON=0
+
+cleanup() {
+    if [[ "$MAINTENANCE_ON" -eq 1 ]]; then
+        sudo -u "$NC_USER" php "${NC_PATH%/}/occ" maintenance:mode --off || true
+    fi
+}
+
+trap cleanup EXIT
+
+echo "Enabling maintenance mode"
+sudo -u "$NC_USER" php "${NC_PATH%/}/occ" maintenance:mode --on
+MAINTENANCE_ON=1
+
+echo "Restoring database: $DB_NAME"
+
+gzip -dc "$LOCAL_FILE" | \
+    MYSQL_PWD="$DB_PASSWORD" mysql \
+        -h "$DB_HOST" \
+        -P "${DB_PORT:-3306}" \
+        -u "$DB_USER" \
+        "$DB_NAME"
+
+echo "Database restore completed successfully"
+
+sudo -u "$NC_USER" php "${NC_PATH%/}/occ" maintenance:mode --off
+MAINTENANCE_ON=0
+
+trap - EXIT

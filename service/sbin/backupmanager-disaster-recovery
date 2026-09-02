@@ -1,0 +1,198 @@
+#!/bin/bash
+set -euo pipefail
+
+MODE="${1:-}"
+BACKUP_FILE="${2:-}"
+
+if [[ "$MODE" != "verify" && "$MODE" != "restore" ]]; then
+    echo "Usage: backupmanager-disaster-recovery {verify|restore} nextcloud-db-YYYY-MM-DD_HH-MM.sql.gz" >&2
+    exit 2
+fi
+
+case "$BACKUP_FILE" in
+    nextcloud-db-*.sql.gz) ;;
+    *)
+        echo "Invalid database backup filename" >&2
+        exit 2
+        ;;
+esac
+
+CONFIG=/etc/backupmanager/backupmanager.conf
+
+[[ -r "$CONFIG" ]] || {
+    echo "Backup Manager config not readable" >&2
+    exit 2
+}
+
+# shellcheck disable=SC1090
+source "$CONFIG"
+
+RESTORE_KEY="${SSH_KEY}_restore"
+
+[[ -r "$RESTORE_KEY" ]] || {
+    echo "Restore key not available" >&2
+    exit 3
+}
+
+[[ -d "$NC_PATH" ]] || {
+    echo "Nextcloud path not available: $NC_PATH" >&2
+    exit 4
+}
+
+[[ -x "${NC_PATH%/}/occ" || -f "${NC_PATH%/}/occ" ]] || {
+    echo "Nextcloud installation not available: ${NC_PATH%/}/occ" >&2
+    exit 4
+}
+
+case "$DATA_PATH" in
+    /var/www/nextcloud/data|/var/www/nextcloud/data/)
+        ;;
+    *)
+        echo "Unsafe DATA_PATH refused: $DATA_PATH" >&2
+        exit 5
+        ;;
+esac
+
+RESTORE_DIR=/var/lib/backupmanager/restore
+CONFIG_STAGE="$RESTORE_DIR/config"
+LOCAL_DB="$RESTORE_DIR/$BACKUP_FILE"
+
+mkdir -p "$CONFIG_STAGE"
+
+SSH_OPTS="-i $RESTORE_KEY -p $BACKUP_PORT -o BatchMode=yes -o UserKnownHostsFile=$(dirname "$RESTORE_KEY")/known_hosts -o ConnectTimeout=10"
+
+echo "=== Nextcloud Disaster Recovery ==="
+echo "Database : $BACKUP_FILE"
+echo "Config   : ${BACKUP_USER}@${BACKUP_HOST}:${BACKUP_PATH%/}/config/"
+echo "Data     : ${BACKUP_USER}@${BACKUP_HOST}:${BACKUP_PATH%/}/data/"
+echo
+
+echo "Downloading configuration backup"
+
+rm -rf "${CONFIG_STAGE:?}/"*
+
+rsync \
+    -rt \
+    --no-owner \
+    --no-group \
+    --no-perms \
+    -e "ssh $SSH_OPTS" \
+    "${BACKUP_USER}@${BACKUP_HOST}:${BACKUP_PATH%/}/config/" \
+    "$CONFIG_STAGE/"
+
+[[ -r "$CONFIG_STAGE/config.php" ]] || {
+    echo "Restored config.php not found" >&2
+    exit 6
+}
+
+echo "Configuration backup verified"
+
+mapfile -t NC_DB_CONFIG < <(
+    php -r '
+    include $argv[1];
+    foreach (["dbhost", "dbname", "dbuser", "dbpassword"] as $key) {
+        echo (string)($CONFIG[$key] ?? ""), PHP_EOL;
+    }
+    ' "$CONFIG_STAGE/config.php"
+)
+
+DB_HOST="${NC_DB_CONFIG[0]:-localhost}"
+DB_NAME="${NC_DB_CONFIG[1]:-}"
+DB_USER="${NC_DB_CONFIG[2]:-}"
+DB_PASSWORD="${NC_DB_CONFIG[3]:-}"
+
+[[ -n "$DB_NAME" && -n "$DB_USER" ]] || {
+    echo "Incomplete database configuration in backup" >&2
+    exit 7
+}
+
+echo "Downloading database backup"
+
+rsync \
+    -rt \
+    --no-owner \
+    --no-group \
+    --no-perms \
+    -e "ssh $SSH_OPTS" \
+    "${BACKUP_USER}@${BACKUP_HOST}:${BACKUP_PATH%/}/database/$BACKUP_FILE" \
+    "$LOCAL_DB"
+
+echo "Checking database backup"
+gzip -t "$LOCAL_DB"
+
+if [[ "$MODE" == "verify" ]]; then
+    echo
+    echo "Disaster recovery preflight successful"
+    echo "Configuration backup: OK"
+    echo "Database backup     : OK"
+    echo "Database name       : $DB_NAME"
+    echo "Database host       : $DB_HOST"
+    echo "Database user       : $DB_USER"
+    echo "Data backup         : reachable"
+    exit 0
+fi
+
+echo "Installing restored configuration"
+
+mkdir -p "${NC_PATH%/}/config"
+
+rsync \
+    -rt \
+    --delete \
+    "$CONFIG_STAGE/" \
+    "${NC_PATH%/}/config/"
+
+chown -R "$NC_USER:$NC_USER" "${NC_PATH%/}/config"
+
+MAINTENANCE_ON=0
+
+cleanup() {
+    if [[ "$MAINTENANCE_ON" -eq 1 ]]; then
+        echo "Disabling maintenance mode"
+        sudo -u "$NC_USER" php "${NC_PATH%/}/occ" maintenance:mode --off || true
+    fi
+}
+
+trap cleanup EXIT
+
+echo "Enabling maintenance mode"
+sudo -u "$NC_USER" php "${NC_PATH%/}/occ" maintenance:mode --on
+MAINTENANCE_ON=1
+
+echo "Restoring database: $DB_NAME"
+
+gzip -dc "$LOCAL_DB" | \
+MYSQL_PWD="$DB_PASSWORD" mysql \
+    -h "$DB_HOST" \
+    -P "${DB_PORT:-3306}" \
+    -u "$DB_USER" \
+    "$DB_NAME"
+
+echo "Database restored"
+
+echo "Restoring data"
+
+rsync \
+    -rltH \
+    --no-owner \
+    --no-group \
+    --no-perms \
+    --delete \
+    -e "ssh $SSH_OPTS" \
+    "${BACKUP_USER}@${BACKUP_HOST}:${BACKUP_PATH%/}/data/" \
+    "${DATA_PATH%/}/"
+
+echo "Correcting data ownership"
+chown -R "$NC_USER:$NC_USER" "${DATA_PATH%/}"
+
+echo "Running Nextcloud repair"
+sudo -u "$NC_USER" php "${NC_PATH%/}/occ" maintenance:repair
+
+echo "Disabling maintenance mode"
+sudo -u "$NC_USER" php "${NC_PATH%/}/occ" maintenance:mode --off
+MAINTENANCE_ON=0
+
+trap - EXIT
+
+echo
+echo "Disaster recovery completed successfully"

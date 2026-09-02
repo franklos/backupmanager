@@ -7,8 +7,15 @@ DB_RC=$?
 /usr/local/bin/backup-data.sh
 DATA_RC=$?
 
+/usr/local/bin/backup-config.sh
+CONFIG_RC=$?
+
 if [ "$DB_RC" -ne 0 ]; then
     exit "$DB_RC"
 fi
 
-exit "$DATA_RC"
+if [ "$DATA_RC" -ne 0 ]; then
+    exit "$DATA_RC"
+fi
+
+exit "$CONFIG_RC"

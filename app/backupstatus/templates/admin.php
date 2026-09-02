@@ -225,6 +225,58 @@ $weekDays = [
                 <button id="backupstatus-recovery-restore" type="button" disabled>
                     <?php p($l->t('Restore backup')); ?>
                 </button>
+
+            <div id="backupstatus-restore-panel" class="backupstatus-restore-panel" hidden>
+                <h4><?php p($l->t('Restore backup')); ?></h4>
+
+                <label class="backupstatus-restore-choice">
+                    <input type="radio" name="backupstatus-restore-type" value="data">
+                    <span>
+                        <strong><?php p($l->t('Restore data')); ?></strong>
+                        <small><?php p($l->t('Restore the latest available data snapshot.')); ?></small>
+                    </span>
+                </label>
+
+                <label class="backupstatus-restore-choice">
+                    <input type="radio" name="backupstatus-restore-type" value="database">
+                    <span>
+                        <strong><?php p($l->t('Restore database')); ?></strong>
+                        <small><?php p($l->t('Restore a selected database backup.')); ?></small>
+                    </span>
+                </label>
+
+                <label class="backupstatus-restore-choice">
+                    <input type="radio" name="backupstatus-restore-type" value="complete">
+                    <span>
+                        <strong><?php p($l->t('Restore complete installation')); ?></strong>
+                        <small><?php p($l->t('Restore data and a selected database backup.')); ?></small>
+                    </span>
+                </label>
+
+                <div id="backupstatus-restore-database-row" class="backupstatus-restore-database-row" hidden>
+                    <label for="backupstatus-restore-database">
+                        <?php p($l->t('Database backup')); ?>
+                    </label>
+                    <select id="backupstatus-restore-database"></select>
+                </div>
+
+                <div class="backupstatus-warning">
+                    <?php p($l->t(
+                        'A restore will overwrite existing data or database contents. No restore will start until you explicitly confirm it.'
+                    )); ?>
+                </div>
+
+                <div class="backupstatus-actions">
+                    <button id="backupstatus-restore-continue" type="button" class="primary" disabled>
+                        <?php p($l->t('Start')); ?>
+                    </button>
+
+                    <button id="backupstatus-restore-cancel" type="button">
+                        <?php p($l->t('Cancel')); ?>
+                    </button>
+                </div>
+            </div>
+
             </div>
 
             <div class="backupstatus-recovery-option">
@@ -237,6 +289,38 @@ $weekDays = [
                 <button id="backupstatus-recovery-disaster" type="button" disabled>
                     <?php p($l->t('Start disaster recovery')); ?>
                 </button>
+
+                <div id="backupstatus-disaster-panel" class="backupstatus-restore-panel" hidden>
+                    <h4><?php p($l->t('Disaster recovery')); ?></h4>
+
+                    <div class="backupstatus-restore-database-row">
+                        <label for="backupstatus-disaster-database">
+                            <?php p($l->t('Database backup')); ?>
+                        </label>
+                        <select id="backupstatus-disaster-database"></select>
+                    </div>
+
+                    <div class="backupstatus-warning">
+                        <?php p($l->t(
+                            'Disaster recovery restores the saved configuration, database and latest data backup to this Nextcloud installation.'
+                        )); ?>
+                    </div>
+
+                    <div class="backupstatus-actions">
+                        <button id="backupstatus-disaster-verify" type="button">
+                            <?php p($l->t('Preflight')); ?>
+                        </button>
+
+                        <button id="backupstatus-disaster-start" type="button" class="primary" disabled>
+                            <?php p($l->t('Start')); ?>
+                        </button>
+
+                        <button id="backupstatus-disaster-cancel" type="button">
+                            <?php p($l->t('Cancel')); ?>
+                        </button>
+                    </div>
+                </div>
+
             </div>
 
             <div class="backupstatus-recovery-option">

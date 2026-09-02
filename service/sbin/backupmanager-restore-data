@@ -1,0 +1,86 @@
+#!/bin/bash
+set -euo pipefail
+
+MODE="${1:-}"
+
+if [[ "$MODE" != "dry-run" && "$MODE" != "restore" ]]; then
+    echo "Usage: backupmanager-restore-data {dry-run|restore}" >&2
+    exit 2
+fi
+
+CONFIG=/etc/backupmanager/backupmanager.conf
+
+[[ -r "$CONFIG" ]] || {
+    echo "Backup Manager config not readable" >&2
+    exit 2
+}
+
+# shellcheck disable=SC1090
+source "$CONFIG"
+
+RESTORE_KEY="${SSH_KEY}_restore"
+
+[[ -r "$RESTORE_KEY" ]] || {
+    echo "Restore key not available" >&2
+    exit 3
+}
+
+[[ -d "$DATA_PATH" ]] || {
+    echo "Nextcloud data path does not exist: $DATA_PATH" >&2
+    exit 4
+}
+
+case "$DATA_PATH" in
+    /var/www/nextcloud/data|/var/www/nextcloud/data/)
+        ;;
+    *)
+        echo "Unsafe DATA_PATH refused: $DATA_PATH" >&2
+        exit 5
+        ;;
+esac
+
+SSH_OPTS="-i $RESTORE_KEY -p $BACKUP_PORT -o BatchMode=yes -o UserKnownHostsFile=$(dirname "$RESTORE_KEY")/known_hosts -o ConnectTimeout=10"
+
+echo "Source : ${BACKUP_USER}@${BACKUP_HOST}:${BACKUP_PATH%/}/data/"
+echo "Target : ${DATA_PATH%/}/"
+
+RSYNC_EXTRA=()
+
+if [[ "$MODE" == "dry-run" ]]; then
+    echo "Restore dry-run"
+    RSYNC_EXTRA+=(--dry-run --itemize-changes)
+else
+    echo "Starting data restore"
+    sudo -u "$NC_USER" php "${NC_PATH%/}/occ" maintenance:mode --on
+fi
+
+set +e
+
+rsync \
+    -rltH \
+    --no-owner \
+    --no-group \
+    --no-perms \
+    --delete \
+    "${RSYNC_EXTRA[@]}" \
+    -e "ssh $SSH_OPTS" \
+    "${BACKUP_USER}@${BACKUP_HOST}:${BACKUP_PATH%/}/data/" \
+    "${DATA_PATH%/}/"
+
+RC=$?
+
+set -e
+
+if [[ "$MODE" == "restore" ]]; then
+    chown -R "$NC_USER:$NC_USER" "${DATA_PATH%/}"
+    sudo -u "$NC_USER" php "${NC_PATH%/}/occ" maintenance:mode --off
+fi
+
+if [[ "$RC" -ne 0 ]]; then
+    echo "Data restore failed with exit code $RC" >&2
+    exit "$RC"
+fi
+
+if [[ "$MODE" == "restore" ]]; then
+    echo "Data restore completed successfully"
+fi

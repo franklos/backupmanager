@@ -54,6 +54,18 @@ try {
         [$requestController, 'status']
     );
 
+    $router->add(
+        'POST',
+        '#^/api/v1/recovery-requests/?$#',
+        [$requestController, 'createRecovery']
+    );
+
+    $router->add(
+        'GET',
+        '#^/api/v1/recovery-requests/([A-Za-z0-9-]+)/?$#',
+        [$requestController, 'recoveryStatus']
+    );
+
     $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
 
     if (!is_string($path)) {
