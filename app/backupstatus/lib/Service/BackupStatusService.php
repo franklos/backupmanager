@@ -193,19 +193,103 @@ final class BackupStatusService {
             '/var/lib/backupmanager/status/db-history.txt'
         );
 
+        $storage = null;
+
+        if ($state === 'ok' && $clientId !== '') {
+            $storage = $this->fetchProviderStorage($clientId);
+        }
+
         $hasIssue =
             $this->segmentsContainIssue($data)
             || $this->segmentsContainIssue($database);
+
+        if ($state === 'ok' && $storage === null) {
+            $state = 'offline';
+            $label = 'Offline';
+        }
 
         return [
             'state' => $hasIssue ? 'issue' : $state,
             'label' => $hasIssue ? 'Issue' : $label,
             'clientId' => $clientId,
             'managedProvider' => true,
+            'storage' => $storage,
             'data' => $data,
             'database' => $database,
             'checkedAt' => time(),
         ];
+    }
+
+    private function fetchProviderStorage(string $clientId): ?array {
+        $providerUrl = rtrim(
+            $this->config->getAppValue(
+                'backupstatus',
+                'provider_url',
+                ''
+            ),
+            '/'
+        );
+
+        $requestToken = trim(
+            $this->config->getAppValue(
+                'backupstatus',
+                'provider_request_token',
+                ''
+            )
+        );
+
+        if ($providerUrl === '' || $requestToken === '') {
+            return null;
+        }
+
+        try {
+            $client = $this->clientService->newClient();
+
+            $response = $client->get(
+                $providerUrl
+                . '/api/v1/clients/'
+                . rawurlencode($clientId)
+                . '/status',
+                [
+                    'headers' => [
+                        'Accept' => 'application/json',
+                        'Authorization' => 'Bearer ' . $requestToken,
+                    ],
+                    'timeout' => 10,
+                    'connect_timeout' => 4,
+                ]
+            );
+
+            if ($response->getStatusCode() !== 200) {
+                return null;
+            }
+
+            $result = json_decode(
+                (string)$response->getBody(),
+                true
+            );
+
+            if (
+                !is_array($result)
+                || ($result['success'] ?? false) !== true
+                || !isset(
+                    $result['capacity_bytes'],
+                    $result['used_bytes'],
+                    $result['free_bytes']
+                )
+            ) {
+                return null;
+            }
+
+            return [
+                'status' => (string)($result['status'] ?? 'connected'),
+                'capacityBytes' => (int)$result['capacity_bytes'],
+                'usedBytes' => (int)$result['used_bytes'],
+                'freeBytes' => (int)$result['free_bytes'],
+            ];
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     private function localHistory(string $file): array {
