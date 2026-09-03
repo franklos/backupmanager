@@ -3,10 +3,10 @@
       xsi:noNamespaceSchemaLocation="https://apps.nextcloud.com/schema/apps/info.xsd">
     <id>backupstatus</id>
     <name>Backup Manager</name>
-    <summary>Installeer en manage back-up en controlleer de actuele back-upstatus binnen Nextcloud.</summary>
-    <description>Beheerders stellen één bron-URL in. Gebruikers zien binnen Nextcloud de status van de laatste vier data- en databaseback-ups.</description>
+    <summary>Backup and recovery management for Nextcloud.</summary>
+    <description>Manage and monitor automated data and database backups, backup storage, and recovery from within Nextcloud. Backup Manager is designed for provider-neutral backup storage and secure recovery procedures.</description>
     <version>0.1.0-beta3</version>
-    <licence>agpl</licence>
+    <licence>AGPL-3.0-or-later</licence>
     <author>Frank Los</author>
     <namespace>BackupStatus</namespace>
     <category>tools</category>

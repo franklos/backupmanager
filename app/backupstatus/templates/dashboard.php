@@ -37,15 +37,19 @@ $usedPercent = $capacity > 0 ? ($used / $capacity) * 100 : 0;
 ?>
 
 <div class="backupstatus-dashboard">
-    <h2>Backup Manager</h2>
-
-    <?php if (!empty($_['clientId'])): ?>
-        <p class="backupstatus-client">
-            Backup client: <strong><?php p($_['clientId']); ?></strong>
-        </p>
-    <?php endif; ?>
+    <div class="backupstatus-header">
+        <h2><?php p(($_['providerName'] ?? 'Backup') . ' backup manager'); ?></h2>
+    </div>
 
     <div class="backupstatus-status">
+
+        <?php if (!empty($_['clientId'])): ?>
+            <p class="backupstatus-client">
+                Backup client: <strong><?php p($_['clientId']); ?></strong>
+            </p>
+        <?php endif; ?>
+
+        <div class="backupstatus-separator"></div>
         <div>
             <span>Status backup-opslag:</span>
             <strong>
@@ -108,14 +112,9 @@ $usedPercent = $capacity > 0 ? ($used / $capacity) * 100 : 0;
             <span>Laatste geslaagde database-back-up:</span>
             <strong><?php p($database['lastSuccess'] ?: '-'); ?></strong>
         </div>
+        <div class="backupstatus-footer">
+            Back-ups verlopen geheel automatisch. &nbsp; Bijgewerkt:
+            <?php p(date('d-m-Y H:i:s', (int)$_['checkedAt'])); ?>
+        </div>
     </div>
-
-    <p class="backupstatus-automatic">
-        Back-ups verlopen geheel automatisch.
-    </p>
-
-    <p class="backupstatus-checked">
-        Bijgewerkt:
-        <?php p(date('d-m-Y H:i:s', (int)$_['checkedAt'])); ?>
-    </p>
 </div>

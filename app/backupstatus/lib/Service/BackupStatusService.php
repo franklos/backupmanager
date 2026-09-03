@@ -201,9 +201,7 @@ final class BackupStatusService {
             '/var/lib/backupmanager/status/db-history.txt'
         );
 
-        $latestDatabaseDump = $this->latestDatabaseDump(
-            '/var/lib/backupmanager/database'
-        );
+        $latestDatabaseDump = $this->latestDatabaseDump();
 
         $storage = null;
 
@@ -220,7 +218,16 @@ final class BackupStatusService {
             $label = 'Offline';
         }
 
+        $providerName = trim(
+            $this->config->getAppValue(
+                'backupstatus',
+                'provider_name',
+                'Backup'
+            )
+        );
+
         return [
+            'providerName' => $providerName !== '' ? $providerName : 'Backup',
             'state' => $hasIssue ? 'issue' : $state,
             'label' => $hasIssue ? 'Issue' : $label,
             'clientId' => $clientId,
@@ -235,27 +242,39 @@ final class BackupStatusService {
         ];
     }
 
-    private function latestDatabaseDump(string $directory): string {
-        if (!is_dir($directory) || !is_readable($directory)) {
+    private function latestDatabaseDump(): string {
+        $output = [];
+        $exitCode = 0;
+
+        exec(
+            'sudo -n -u backupmgr /usr/local/sbin/backupmanager-list-backups',
+            $output,
+            $exitCode
+        );
+
+        if ($exitCode !== 0) {
             return '';
         }
 
-        $files = glob(
-            rtrim($directory, '/')
-            . '/nextcloud-db-*.sql.gz'
-        );
+        $inDatabase = false;
 
-        if (!is_array($files) || $files === []) {
-            return '';
+        foreach ($output as $line) {
+            $line = trim($line);
+
+            if ($line === 'DATABASE') {
+                $inDatabase = true;
+                continue;
+            }
+
+            if (
+                $inDatabase
+                && preg_match('/^nextcloud-db-.*\\.sql\\.gz$/', $line) === 1
+            ) {
+                return $line;
+            }
         }
 
-        usort(
-            $files,
-            static fn(string $a, string $b): int =>
-                filemtime($b) <=> filemtime($a)
-        );
-
-        return basename($files[0]);
+        return '';
     }
 
     private function fetchProviderStorage(string $clientId): ?array {
