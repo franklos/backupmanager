@@ -2,59 +2,117 @@
 /** @var array $_ */
 style('backupstatus', 'dashboard');
 
-$tasks = [
-    'Data-back-up' => $_['data'] ?? [],
-    'Database-back-up' => $_['database'] ?? [],
-];
+$storage = $_['storage'] ?? null;
+$data = $_['dataSummary'] ?? [];
+$database = $_['databaseSummary'] ?? [];
 
-$managedProvider = (bool)($_['managedProvider'] ?? false);
-$clientId = (string)($_['clientId'] ?? '');
+$formatBytes = static function (int $bytes): string {
+    if ($bytes >= 1099511627776) {
+        return number_format($bytes / 1099511627776, 1, ',', '.') . ' TB';
+    }
+
+    if ($bytes >= 1073741824) {
+        return number_format($bytes / 1073741824, 1, ',', '.') . ' GB';
+    }
+
+    if ($bytes >= 1048576) {
+        return number_format($bytes / 1048576, 1, ',', '.') . ' MB';
+    }
+
+    return number_format($bytes / 1024, 1, ',', '.') . ' KB';
+};
+
+$statusLabel = static function (string $status): string {
+    return match ($status) {
+        'ok' => 'OK',
+        'failed' => 'Mislukt',
+        default => 'Onbekend',
+    };
+};
+
+$capacity = is_array($storage) ? (int)($storage['capacityBytes'] ?? 0) : 0;
+$used = is_array($storage) ? (int)($storage['usedBytes'] ?? 0) : 0;
+$free = is_array($storage) ? (int)($storage['freeBytes'] ?? 0) : 0;
+$usedPercent = $capacity > 0 ? ($used / $capacity) * 100 : 0;
 ?>
 
 <div class="backupstatus-dashboard">
-    <div class="backupstatus-dashboard__header">
-        <h2>Back-upstatus</h2>
-        <span class="backupstatus-overall backupstatus-<?php p($_['state']); ?>">
-            <?php p($_['label']); ?>
-        </span>
-    </div>
+    <h2>Backup Manager</h2>
 
-    <?php if ($managedProvider && $clientId !== ''): ?>
-        <p>
-            Backup client:
-            <strong><?php p($clientId); ?></strong>
+    <?php if (!empty($_['clientId'])): ?>
+        <p class="backupstatus-client">
+            Backup client: <strong><?php p($_['clientId']); ?></strong>
         </p>
     <?php endif; ?>
 
-    <?php foreach ($tasks as $name => $segments): ?>
-        <section class="backupstatus-task">
-            <h3><?php p($name); ?></h3>
+    <div class="backupstatus-status">
+        <div>
+            <span>Status backup-opslag:</span>
+            <strong>
+                <?php p(is_array($storage) ? 'Verbonden' : 'Niet bereikbaar'); ?>
+            </strong>
+        </div>
 
-            <?php if ($segments === []): ?>
-                <p class="backupstatus-empty">
-                    Nog geen back-upresultaten.
-                </p>
-            <?php else: ?>
-                <div class="backupstatus-bar"
-                     role="list"
-                     aria-label="<?php p($name); ?>">
+        <div>
+            <span>Opslagcapaciteit:</span>
+            <strong><?php p($capacity > 0 ? $formatBytes($capacity) : '-'); ?></strong>
+        </div>
 
-                    <?php foreach ($segments as $segment): ?>
-                        <div class="backupstatus-segment-wrap">
-                            <div
-                                class="backupstatus-segment backupstatus-<?php p($segment['state']); ?>"
-                                role="listitem"
-                                title="<?php p($segment['detail']); ?>"
-                                aria-label="<?php p($segment['label'] . ': ' . $segment['detail']); ?>">
-                            </div>
-                            <small><?php p(substr((string)$segment['date'], 0, 5)); ?></small>
-                        </div>
-                    <?php endforeach; ?>
+        <div>
+            <span>Gebruikte ruimte:</span>
+            <strong>
+                <?php
+                p(
+                    $capacity > 0
+                        ? $formatBytes($used) . ' (' . number_format($usedPercent, 1, ',', '.') . '%)'
+                        : '-'
+                );
+                ?>
+            </strong>
+        </div>
 
-                </div>
-            <?php endif; ?>
-        </section>
-    <?php endforeach; ?>
+        <div>
+            <span>Vrije ruimte:</span>
+            <strong><?php p($capacity > 0 ? $formatBytes($free) : '-'); ?></strong>
+        </div>
+
+        <div class="backupstatus-separator"></div>
+
+        <div>
+            <span>Huidige data-back-up status:</span>
+            <strong class="backupstatus-<?php p($data['status'] ?? 'unknown'); ?>">
+                <?php p($statusLabel((string)($data['status'] ?? 'unknown'))); ?>
+            </strong>
+        </div>
+
+        <div>
+            <span>Laatste geslaagde data-back-up:</span>
+            <strong><?php p($data['lastSuccess'] ?: '-'); ?></strong>
+        </div>
+
+        <div class="backupstatus-separator"></div>
+
+        <div>
+            <span>Database-back-up status:</span>
+            <strong class="backupstatus-<?php p($database['status'] ?? 'unknown'); ?>">
+                <?php p($statusLabel((string)($database['status'] ?? 'unknown'))); ?>
+            </strong>
+        </div>
+
+        <div>
+            <span>Laatste database-dump:</span>
+            <strong><?php p($_['latestDatabaseDump'] ?: '-'); ?></strong>
+        </div>
+
+        <div>
+            <span>Laatste geslaagde database-back-up:</span>
+            <strong><?php p($database['lastSuccess'] ?: '-'); ?></strong>
+        </div>
+    </div>
+
+    <p class="backupstatus-automatic">
+        Back-ups verlopen geheel automatisch.
+    </p>
 
     <p class="backupstatus-checked">
         Bijgewerkt:

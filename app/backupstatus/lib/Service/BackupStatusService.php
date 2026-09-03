@@ -193,6 +193,18 @@ final class BackupStatusService {
             '/var/lib/backupmanager/status/db-history.txt'
         );
 
+        $dataSummary = $this->localSummary(
+            '/var/lib/backupmanager/status/data-history.txt'
+        );
+
+        $databaseSummary = $this->localSummary(
+            '/var/lib/backupmanager/status/db-history.txt'
+        );
+
+        $latestDatabaseDump = $this->latestDatabaseDump(
+            '/var/lib/backupmanager/database'
+        );
+
         $storage = null;
 
         if ($state === 'ok' && $clientId !== '') {
@@ -216,8 +228,34 @@ final class BackupStatusService {
             'storage' => $storage,
             'data' => $data,
             'database' => $database,
+            'dataSummary' => $dataSummary,
+            'databaseSummary' => $databaseSummary,
+            'latestDatabaseDump' => $latestDatabaseDump,
             'checkedAt' => time(),
         ];
+    }
+
+    private function latestDatabaseDump(string $directory): string {
+        if (!is_dir($directory) || !is_readable($directory)) {
+            return '';
+        }
+
+        $files = glob(
+            rtrim($directory, '/')
+            . '/nextcloud-db-*.sql.gz'
+        );
+
+        if (!is_array($files) || $files === []) {
+            return '';
+        }
+
+        usort(
+            $files,
+            static fn(string $a, string $b): int =>
+                filemtime($b) <=> filemtime($a)
+        );
+
+        return basename($files[0]);
     }
 
     private function fetchProviderStorage(string $clientId): ?array {
@@ -290,6 +328,57 @@ final class BackupStatusService {
         } catch (Throwable) {
             return null;
         }
+    }
+
+    private function localSummary(string $file): array {
+        $summary = [
+            'status' => 'unknown',
+            'lastAttempt' => '',
+            'lastSuccess' => '',
+            'detail' => '',
+        ];
+
+        if (!is_readable($file)) {
+            return $summary;
+        }
+
+        $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+
+        if (!is_array($lines)) {
+            return $summary;
+        }
+
+        foreach ($lines as $line) {
+            $line = trim($line);
+
+            if (
+                preg_match(
+                    '/^(\\d{2}-\\d{2}-\\d{4})\\s+(\\d{2}:\\d{2})\\s*\\|\\s*([^|]+)(?:\\|\\s*(.*))?$/u',
+                    $line,
+                    $m
+                ) !== 1
+            ) {
+                continue;
+            }
+
+            $token = strtoupper(trim($m[3]));
+
+            if ($token === 'START') {
+                continue;
+            }
+
+            $timestamp = $m[1] . ' ' . $m[2];
+
+            $summary['status'] = $token === 'OK' ? 'ok' : 'failed';
+            $summary['lastAttempt'] = $timestamp;
+            $summary['detail'] = $line;
+
+            if ($token === 'OK') {
+                $summary['lastSuccess'] = $timestamp;
+            }
+        }
+
+        return $summary;
     }
 
     private function localHistory(string $file): array {
