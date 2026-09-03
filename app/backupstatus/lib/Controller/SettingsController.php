@@ -391,6 +391,20 @@ final class SettingsController extends Controller {
                         "error" => "Approved, but local Backup Manager configuration failed",
                     ], 500);
                 }
+
+                /*
+                 * Approval completes the onboarding phase. From this point on,
+                 * the active client ID and provider token identify the client.
+                 * The original request ID must no longer be required.
+                 */
+                $this->config->deleteAppValue(
+                    "backupstatus",
+                    "provider_request_id"
+                );
+                $this->config->deleteAppValue(
+                    "backupstatus",
+                    "provider_request_sent"
+                );
             }
 
             return new JSONResponse([

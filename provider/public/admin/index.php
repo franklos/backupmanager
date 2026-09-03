@@ -36,55 +36,91 @@ $error = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $csrf = (string)($_POST['csrf'] ?? '');
     $action = (string)($_POST['action'] ?? '');
+    $requestType = (string)($_POST['request_type'] ?? '');
     $requestId = trim((string)($_POST['request_id'] ?? ''));
 
     if (!hash_equals((string)$_SESSION['csrf'], $csrf)) {
         $error = 'Invalid CSRF token.';
-    } elseif (preg_match('/^REC-[0-9]{8}-[A-F0-9]{6}$/', $requestId) !== 1) {
-        $error = 'Invalid recovery request ID.';
     } elseif (!in_array($action, ['approve', 'reject'], true)) {
         $error = 'Invalid action.';
     } else {
-        $script = $action === 'approve'
-            ? dirname(__DIR__, 2) . '/bin/approve-recovery.php'
-            : dirname(__DIR__, 2) . '/bin/reject-recovery.php';
+        $script = '';
 
-        $process = proc_open(
-            [PHP_BINARY, $script, $requestId, 'provider-admin'],
-            [
-                1 => ['pipe', 'w'],
-                2 => ['pipe', 'w'],
-            ],
-            $pipes
-        );
-
-        if (!is_resource($process)) {
-            $error = 'Unable to start provider action.';
+        if (
+            $requestType === 'provider'
+            && preg_match('/^REQ-[0-9]{8}-[A-F0-9]{6}$/', $requestId) === 1
+        ) {
+            $script = $action === 'approve'
+                ? dirname(__DIR__, 2) . '/bin/approve.php'
+                : dirname(__DIR__, 2) . '/bin/reject-request.php';
+        } elseif (
+            $requestType === 'recovery'
+            && preg_match('/^REC-[0-9]{8}-[A-F0-9]{6}$/', $requestId) === 1
+        ) {
+            $script = $action === 'approve'
+                ? dirname(__DIR__, 2) . '/bin/approve-recovery.php'
+                : dirname(__DIR__, 2) . '/bin/reject-recovery.php';
         } else {
-            $stdout = trim((string)stream_get_contents($pipes[1]));
-            $stderr = trim((string)stream_get_contents($pipes[2]));
+            $error = 'Invalid request.';
+        }
 
-            fclose($pipes[1]);
-            fclose($pipes[2]);
+        if ($script !== '' && $error === '') {
+            $process = proc_open(
+                ['/usr/bin/php', $script, $requestId, 'provider-admin'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes
+            );
 
-            $exitCode = proc_close($process);
-
-            if ($exitCode === 0) {
-                $message = $stdout !== '' ? $stdout : ucfirst($action) . ' completed.';
+            if (!is_resource($process)) {
+                $error = 'Unable to start provider action.';
             } else {
-                $error = $stderr !== '' ? $stderr : 'Provider action failed.';
+                $stdout = trim((string)stream_get_contents($pipes[1]));
+                $stderr = trim((string)stream_get_contents($pipes[2]));
+
+                fclose($pipes[1]);
+                fclose($pipes[2]);
+
+                $exitCode = proc_close($process);
+
+                if ($exitCode === 0) {
+                    $message = $stdout !== ''
+                        ? $stdout
+                        : ucfirst($action) . ' completed.';
+                } else {
+                    $error = $stderr !== ''
+                        ? $stderr
+                        : 'Provider action failed.';
+                }
             }
         }
     }
 }
 
-$statement = $pdo->query(
+$providerStatement = $pdo->query(
+    'SELECT
+        request_id,
+        source_id,
+        source_url,
+        ssh_fingerprint,
+        requested_at,
+        expires_at,
+        requester_ip
+     FROM provider_requests
+     WHERE status = "pending"
+     ORDER BY requested_at ASC'
+);
+
+$providerRequests = $providerStatement->fetchAll();
+
+$recoveryStatement = $pdo->query(
     'SELECT
         recovery_request_id,
         client_id,
         source_id,
         ssh_fingerprint,
-        status,
         requested_at,
         expires_at,
         requester_ip
@@ -93,7 +129,7 @@ $statement = $pdo->query(
      ORDER BY requested_at ASC'
 );
 
-$requests = $statement->fetchAll();
+$recoveryRequests = $recoveryStatement->fetchAll();
 
 function h(string $value): string
 {
@@ -123,8 +159,9 @@ main {
     border: 1px solid #ddd;
     border-radius: 10px;
     padding: 24px;
+    margin-bottom: 24px;
 }
-h1 { margin-top: 0; }
+h1, h2 { margin-top: 0; }
 table {
     width: 100%;
     border-collapse: collapse;
@@ -156,10 +193,9 @@ code { font-size: 0.88rem; }
 </head>
 <body>
 <main>
-<div class="card">
 
+<div class="card">
 <h1>Backup Manager Provider</h1>
-<p>Pending provider recovery requests</p>
 
 <?php if ($message !== ''): ?>
     <div class="notice"><?= h($message) ?></div>
@@ -169,9 +205,74 @@ code { font-size: 0.88rem; }
     <div class="notice error"><?= h($error) ?></div>
 <?php endif; ?>
 
-<?php if ($requests === []): ?>
+<h2>Pending provider requests</h2>
 
-    <p><strong>No pending recovery requests.</strong></p>
+<?php if ($providerRequests === []): ?>
+
+<p><strong>No pending provider requests.</strong></p>
+
+<?php else: ?>
+
+<table>
+<thead>
+<tr>
+    <th>Request</th>
+    <th>Source</th>
+    <th>SSH fingerprint</th>
+    <th>Requested</th>
+    <th>Expires</th>
+    <th>Action</th>
+</tr>
+</thead>
+<tbody>
+
+<?php foreach ($providerRequests as $request): ?>
+<tr>
+    <td><code><?= h((string)$request['request_id']) ?></code></td>
+    <td>
+        <strong><?= h((string)$request['source_id']) ?></strong>
+        <div class="small"><?= h((string)$request['source_url']) ?></div>
+        <?php if (!empty($request['requester_ip'])): ?>
+            <div class="small">IP: <?= h((string)$request['requester_ip']) ?></div>
+        <?php endif; ?>
+    </td>
+    <td><code><?= h((string)$request['ssh_fingerprint']) ?></code></td>
+    <td><?= h((string)$request['requested_at']) ?></td>
+    <td><?= h((string)($request['expires_at'] ?? '')) ?></td>
+    <td>
+        <form method="post" style="display:inline">
+            <input type="hidden" name="csrf" value="<?= h((string)$_SESSION['csrf']) ?>">
+            <input type="hidden" name="request_type" value="provider">
+            <input type="hidden" name="request_id"
+                   value="<?= h((string)$request['request_id']) ?>">
+
+            <button class="approve" type="submit" name="action" value="approve"
+                    onclick="return confirm('Approve this provider request?')">
+                Approve
+            </button>
+
+            <button class="reject" type="submit" name="action" value="reject"
+                    onclick="return confirm('Reject this provider request?')">
+                Reject
+            </button>
+        </form>
+    </td>
+</tr>
+<?php endforeach; ?>
+
+</tbody>
+</table>
+
+<?php endif; ?>
+</div>
+
+<div class="card">
+
+<h2>Pending recovery requests</h2>
+
+<?php if ($recoveryRequests === []): ?>
+
+<p><strong>No pending recovery requests.</strong></p>
 
 <?php else: ?>
 
@@ -189,32 +290,26 @@ code { font-size: 0.88rem; }
 </thead>
 <tbody>
 
-<?php foreach ($requests as $request): ?>
+<?php foreach ($recoveryRequests as $request): ?>
 <tr>
-    <td>
-        <code><?= h((string)$request['recovery_request_id']) ?></code>
-    </td>
-    <td>
-        <strong><?= h((string)$request['client_id']) ?></strong>
-    </td>
+    <td><code><?= h((string)$request['recovery_request_id']) ?></code></td>
+    <td><strong><?= h((string)$request['client_id']) ?></strong></td>
     <td>
         <?= h((string)$request['source_id']) ?>
         <?php if (!empty($request['requester_ip'])): ?>
-            <div class="small">
-                IP: <?= h((string)$request['requester_ip']) ?>
-            </div>
+            <div class="small">IP: <?= h((string)$request['requester_ip']) ?></div>
         <?php endif; ?>
     </td>
-    <td>
-        <code><?= h((string)$request['ssh_fingerprint']) ?></code>
-    </td>
+    <td><code><?= h((string)$request['ssh_fingerprint']) ?></code></td>
     <td><?= h((string)$request['requested_at']) ?></td>
-    <td><?= h((string)$request['expires_at']) ?></td>
+    <td><?= h((string)($request['expires_at'] ?? '')) ?></td>
     <td>
         <form method="post" style="display:inline">
             <input type="hidden" name="csrf" value="<?= h((string)$_SESSION['csrf']) ?>">
+            <input type="hidden" name="request_type" value="recovery">
             <input type="hidden" name="request_id"
                    value="<?= h((string)$request['recovery_request_id']) ?>">
+
             <button class="approve" type="submit" name="action" value="approve"
                     onclick="return confirm('Approve this recovery request and replace the current SSH key?')">
                 Approve
