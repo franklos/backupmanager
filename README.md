@@ -2,7 +2,7 @@
 
 Backup Manager backup and recovery solution for Nextcloud.
 
-The goal of Backup Manager is to manage the complete backup and recovery process from within Nextcloud.
+The goal of Backup Manager is to create and manage the complete backup and recovery process.
 
 The Nextcloud app presents backup and recovery information to administrators, while privileged backup operations are handled by separate system services. This keeps system credentials and storage-provider-specific logic outside the Nextcloud application.
 
