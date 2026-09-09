@@ -1083,6 +1083,41 @@ final class RequestController
                 'request_id' => $requestId,
             ]);
 
+            $event = $pdo->prepare(
+                'INSERT INTO provider_events (
+                    actor_type,
+                    actor_id,
+                    request_id,
+                    event_type,
+                    severity,
+                    details,
+                    remote_ip
+                ) VALUES (
+                    "system",
+                    "email-approval",
+                    :request_id,
+                    "request.approval_failed",
+                    "error",
+                    :details,
+                    :remote_ip
+                )'
+            );
+
+            $event->execute([
+                'request_id' => $requestId,
+                'details' => json_encode([
+                    'request_id' => $requestId,
+                    'action' => $action,
+                    'reason' => 'approval_action_start_failed',
+                ], JSON_UNESCAPED_SLASHES),
+                'remote_ip' => $_SERVER['REMOTE_ADDR'] ?? null,
+            ]);
+
+            $delete = $pdo->prepare(
+                'DELETE FROM provider_requests WHERE request_id = :request_id'
+            );
+            $delete->execute(['request_id' => $requestId]);
+
             Response::json([
                 'success' => false,
                 'error' => 'Unable to start provider action',
@@ -1110,6 +1145,41 @@ final class RequestController
             $cleanup->execute([
                 'request_id' => $requestId,
             ]);
+
+            $event = $pdo->prepare(
+                'INSERT INTO provider_events (
+                    actor_type,
+                    actor_id,
+                    request_id,
+                    event_type,
+                    severity,
+                    details,
+                    remote_ip
+                ) VALUES (
+                    "system",
+                    "email-approval",
+                    :request_id,
+                    "request.approval_failed",
+                    "error",
+                    :details,
+                    :remote_ip
+                )'
+            );
+
+            $event->execute([
+                'request_id' => $requestId,
+                'details' => json_encode([
+                    'request_id' => $requestId,
+                    'action' => $action,
+                    'reason' => 'approval_action_failed',
+                ], JSON_UNESCAPED_SLASHES),
+                'remote_ip' => $_SERVER['REMOTE_ADDR'] ?? null,
+            ]);
+
+            $delete = $pdo->prepare(
+                'DELETE FROM provider_requests WHERE request_id = :request_id'
+            );
+            $delete->execute(['request_id' => $requestId]);
 
             error_log(
                 'Backup Manager approval action failed for '

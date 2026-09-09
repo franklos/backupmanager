@@ -104,11 +104,17 @@ try {
         'actor_id' => $rejectedBy,
         'request_id' => $requestId,
         'details' => json_encode([
+            'request_id' => $requestId,
             'source_id' => $request['source_id'],
             'source_url' => $request['source_url'],
             'ssh_fingerprint' => $request['ssh_fingerprint'],
         ], JSON_UNESCAPED_SLASHES),
     ]);
+
+    $delete = $pdo->prepare(
+        'DELETE FROM provider_requests WHERE request_id = :request_id'
+    );
+    $delete->execute(['request_id' => $requestId]);
 
     $pdo->commit();
 

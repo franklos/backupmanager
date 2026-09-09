@@ -89,6 +89,38 @@ try {
             'request_id' => $requestId,
         ]);
 
+        $event = $pdo->prepare(
+            'INSERT INTO provider_events (
+                actor_type,
+                actor_id,
+                request_id,
+                event_type,
+                severity,
+                details
+            ) VALUES (
+                "system",
+                "provider",
+                :request_id,
+                "request.expired",
+                "warning",
+                :details
+            )'
+        );
+
+        $event->execute([
+            'request_id' => $requestId,
+            'details' => json_encode([
+                'request_id' => $requestId,
+                'source_id' => $request['source_id'],
+                'source_url' => $request['source_url'],
+            ], JSON_UNESCAPED_SLASHES),
+        ]);
+
+        $delete = $pdo->prepare(
+            'DELETE FROM provider_requests WHERE request_id = :request_id'
+        );
+        $delete->execute(['request_id' => $requestId]);
+
         $pdo->commit();
 
         fail('Request has expired');

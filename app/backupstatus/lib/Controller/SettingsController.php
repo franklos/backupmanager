@@ -338,8 +338,31 @@ final class SettingsController extends Controller {
                         "Authorization" => "Bearer " . $requestToken,
                     ],
                     "timeout" => 30,
+                    "http_errors" => false,
                 ]
             );
+
+            $statusCode = $response->getStatusCode();
+
+            if ($statusCode === 404) {
+                foreach (["provider_request_id", "provider_request_token", "provider_request_sent", "provider_request_status"] as $key) {
+                    $this->config->deleteAppValue("backupstatus", $key);
+                }
+
+                return new JSONResponse([
+                    "success" => true,
+                    "status" => "rejected",
+                    "requestId" => $requestId,
+                    "connection" => null,
+                ]);
+            }
+
+            if ($statusCode < 200 || $statusCode >= 300) {
+                return new JSONResponse([
+                    "success" => false,
+                    "error" => "Provider status check failed",
+                ], 502);
+            }
 
             $data = json_decode((string)$response->getBody(), true);
 
