@@ -36,11 +36,22 @@ final class RequestController
             $publicKey = trim((string)($input['public_key'] ?? ''));
             $clientVersion = trim((string)($input['client_version'] ?? ''));
             $nextcloudVersion = trim((string)($input['nextcloud_version'] ?? ''));
+            $requesterEmail = trim((string)($input['requester_email'] ?? ''));
 
             if ($sourceId === '') {
                 Response::json([
                     'success' => false,
                     'error' => 'source_id is required',
+                ], 400);
+            }
+
+            if (
+                $requesterEmail === ''
+                || filter_var($requesterEmail, FILTER_VALIDATE_EMAIL) === false
+            ) {
+                Response::json([
+                    'success' => false,
+                    'error' => 'Valid requester_email is required',
                 ], 400);
             }
 
@@ -78,6 +89,9 @@ final class RequestController
             $requestToken = bin2hex(random_bytes(32));
             $requestTokenHash = hash('sha256', $requestToken);
 
+            $approvalToken = bin2hex(random_bytes(32));
+            $approvalTokenHash = hash('sha256', $approvalToken);
+
             $expiryHours = max(
                 1,
                 (int)$this->config->get('api', 'request_expiry_hours', 24)
@@ -88,6 +102,8 @@ final class RequestController
                 time() + ($expiryHours * 3600)
             );
 
+            $approvalTokenExpiresAt = $expiresAt;
+
             $remoteIp = $_SERVER['REMOTE_ADDR'] ?? null;
 
             $pdo = $this->database->pdo();
@@ -97,9 +113,12 @@ final class RequestController
                 'INSERT INTO provider_requests (
                     request_id,
                     request_token_hash,
+                    approval_token_hash,
+                    approval_token_expires_at,
                     status,
                     source_id,
                     source_url,
+                    requester_email,
                     public_key,
                     ssh_fingerprint,
                     expires_at,
@@ -109,9 +128,12 @@ final class RequestController
                 ) VALUES (
                     :request_id,
                     :request_token_hash,
+                    :approval_token_hash,
+                    :approval_token_expires_at,
                     "pending",
                     :source_id,
                     :source_url,
+                    :requester_email,
                     :public_key,
                     :ssh_fingerprint,
                     :expires_at,
@@ -124,8 +146,11 @@ final class RequestController
             $statement->execute([
                 'request_id' => $requestId,
                 'request_token_hash' => $requestTokenHash,
+                'approval_token_hash' => $approvalTokenHash,
+                'approval_token_expires_at' => $approvalTokenExpiresAt,
                 'source_id' => $sourceId,
                 'source_url' => $sourceUrl,
+                'requester_email' => $requesterEmail,
                 'public_key' => $publicKey,
                 'ssh_fingerprint' => $fingerprint,
                 'expires_at' => $expiresAt,
@@ -172,10 +197,13 @@ final class RequestController
                 'success' => true,
                 'request_id' => $requestId,
                 'request_token' => $requestToken,
+                'approval_token' => $approvalToken,
                 'status' => 'pending',
                 'expires_at' => $expiresAt,
             ], 201);
         } catch (Throwable $e) {
+            error_log('Backup Manager provider create error: ' . $e->getMessage());
+
             if (isset($pdo) && $pdo instanceof PDO && $pdo->inTransaction()) {
                 $pdo->rollBack();
             }
@@ -920,5 +948,184 @@ final class RequestController
         Response::json($response);
     }
 
+
+
+    public function approvalAction(string $requestId, string $action): void
+    {
+        if (
+            preg_match('/^REQ-[0-9]{8}-[A-F0-9]{6}$/', $requestId) !== 1
+            || !in_array($action, ['approve', 'reject'], true)
+        ) {
+            Response::json([
+                'success' => false,
+                'error' => 'Invalid approval request',
+            ], 400);
+        }
+
+        $token = trim((string)($_GET['token'] ?? ''));
+
+        if ($token === '') {
+            Response::json([
+                'success' => false,
+                'error' => 'Missing approval token',
+            ], 400);
+        }
+
+        $pdo = $this->database->pdo();
+
+        $statement = $pdo->prepare(
+            'SELECT
+                request_id,
+                status,
+                approval_token_hash,
+                approval_token_expires_at,
+                approval_token_used_at
+             FROM provider_requests
+             WHERE request_id = :request_id
+             LIMIT 1'
+        );
+
+        $statement->execute([
+            'request_id' => $requestId,
+        ]);
+
+        $request = $statement->fetch(PDO::FETCH_ASSOC);
+
+        if (!is_array($request)) {
+            Response::json([
+                'success' => false,
+                'error' => 'Approval request not found',
+            ], 404);
+        }
+
+        if ((string)$request['status'] !== 'pending') {
+            Response::json([
+                'success' => false,
+                'error' => 'Request is no longer pending',
+            ], 409);
+        }
+
+        if (!empty($request['approval_token_used_at'])) {
+            Response::json([
+                'success' => false,
+                'error' => 'Approval token has already been used',
+            ], 410);
+        }
+
+        if (
+            empty($request['approval_token_expires_at'])
+            || strtotime((string)$request['approval_token_expires_at']) < time()
+        ) {
+            Response::json([
+                'success' => false,
+                'error' => 'Approval token has expired',
+            ], 410);
+        }
+
+        $tokenHash = hash('sha256', $token);
+
+        if (
+            empty($request['approval_token_hash'])
+            || !hash_equals((string)$request['approval_token_hash'], $tokenHash)
+        ) {
+            Response::json([
+                'success' => false,
+                'error' => 'Invalid approval token',
+            ], 403);
+        }
+
+        $claim = $pdo->prepare(
+            'UPDATE provider_requests
+             SET approval_token_used_at = UTC_TIMESTAMP()
+             WHERE request_id = :request_id
+               AND status = "pending"
+               AND approval_token_used_at IS NULL
+               AND approval_token_expires_at >= UTC_TIMESTAMP()
+               AND approval_token_hash = :approval_token_hash'
+        );
+
+        $claim->execute([
+            'request_id' => $requestId,
+            'approval_token_hash' => $tokenHash,
+        ]);
+
+        if ($claim->rowCount() !== 1) {
+            Response::json([
+                'success' => false,
+                'error' => 'Approval token is no longer valid',
+            ], 409);
+        }
+
+        $script = $action === 'approve'
+            ? dirname(__DIR__, 2) . '/bin/approve.php'
+            : dirname(__DIR__, 2) . '/bin/reject-request.php';
+
+        $process = proc_open(
+            ['/usr/bin/php', $script, $requestId, 'email-approval'],
+            [
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ],
+            $pipes
+        );
+
+        if (!is_resource($process)) {
+            $cleanup = $pdo->prepare(
+                'UPDATE provider_requests
+                 SET status = "rejected",
+                     rejected_at = UTC_TIMESTAMP(),
+                     notes = CONCAT_WS("\n", NULLIF(notes, ""), "Email approval action could not be started")
+                 WHERE request_id = :request_id
+                   AND status = "pending"'
+            );
+
+            $cleanup->execute([
+                'request_id' => $requestId,
+            ]);
+
+            Response::json([
+                'success' => false,
+                'error' => 'Unable to start provider action',
+            ], 500);
+        }
+
+        $stdout = trim((string)stream_get_contents($pipes[1]));
+        $stderr = trim((string)stream_get_contents($pipes[2]));
+
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+
+        $exitCode = proc_close($process);
+
+        if ($exitCode !== 0) {
+            $cleanup = $pdo->prepare(
+                'UPDATE provider_requests
+                 SET status = "rejected",
+                     rejected_at = UTC_TIMESTAMP(),
+                     notes = CONCAT_WS("\n", NULLIF(notes, ""), "Email approval action failed")
+                 WHERE request_id = :request_id
+                   AND status = "pending"'
+            );
+
+            $cleanup->execute([
+                'request_id' => $requestId,
+            ]);
+
+            error_log(
+                'Backup Manager approval action failed for '
+                . $requestId
+                . ': '
+                . ($stderr !== '' ? $stderr : 'unknown error')
+            );
+
+            Response::json([
+                'success' => false,
+                'error' => 'Provider action failed',
+            ], 500);
+        }
+
+        http_response_code(204);
+        exit;
+    }
 
 }

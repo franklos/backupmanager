@@ -28,3 +28,4 @@ provider/.env
 .DS_Store
 *.swp
 *~
+!provider/sql/*.sql

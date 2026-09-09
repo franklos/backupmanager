@@ -95,71 +95,157 @@ try {
     }
 
     /*
-     * Bepaal volgend permanent client-ID.
-     * De interne auto_increment-ID blijft technisch;
-     * BM-xxxxxx is de publieke permanente identiteit.
+     * Hergebruik een bestaande client voor dezelfde bron.
+     * Alleen een werkelijk nieuwe bron krijgt een nieuw BM-client-ID.
      */
-    $next = $pdo->query(
-        'SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM clients'
-    )->fetch();
+    $existingClient = $pdo->prepare(
+        'SELECT client_id
+         FROM clients
+         WHERE source_id = :source_id
+         LIMIT 1
+         FOR UPDATE'
+    );
 
-    $sequence = (int)($next['next_id'] ?? 1);
-    $clientId = sprintf('BM-%06d', $sequence);
+    $existingClient->execute([
+        'source_id' => $request['source_id'],
+    ]);
+
+    $client = $existingClient->fetch();
+
+    if (is_array($client)) {
+        $clientId = (string)$client['client_id'];
+
+        $clientUpdate = $pdo->prepare(
+            'UPDATE clients
+             SET source_url = :source_url,
+                 status = "active",
+                 approved_at = UTC_TIMESTAMP(),
+                 approved_by = :approved_by,
+                 contact_email = :contact_email,
+                 client_version = :client_version,
+                 nextcloud_version = :nextcloud_version
+             WHERE client_id = :client_id'
+        );
+
+        $clientUpdate->execute([
+            'source_url' => $request['source_url'],
+            'approved_by' => $approvedBy,
+            'contact_email' => $request['requester_email'] ?: null,
+            'client_version' => $request['client_version'],
+            'nextcloud_version' => $request['nextcloud_version'],
+            'client_id' => $clientId,
+        ]);
+    } else {
+        $next = $pdo->query(
+            'SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM clients'
+        )->fetch();
+
+        $sequence = (int)($next['next_id'] ?? 1);
+        $clientId = sprintf('BM-%06d', $sequence);
+
+        $clientInsert = $pdo->prepare(
+            'INSERT INTO clients (
+                client_id,
+                source_id,
+                source_url,
+                status,
+                approved_at,
+                approved_by,
+                contact_email,
+                client_version,
+                nextcloud_version
+            ) VALUES (
+                :client_id,
+                :source_id,
+                :source_url,
+                "active",
+                UTC_TIMESTAMP(),
+                :approved_by,
+                :contact_email,
+                :client_version,
+                :nextcloud_version
+            )'
+        );
+
+        $clientInsert->execute([
+            'client_id' => $clientId,
+            'source_id' => $request['source_id'],
+            'source_url' => $request['source_url'],
+            'approved_by' => $approvedBy,
+            'contact_email' => $request['requester_email'] ?: null,
+            'client_version' => $request['client_version'],
+            'nextcloud_version' => $request['nextcloud_version'],
+        ]);
+    }
 
     /*
-     * Bij een race kan de UNIQUE constraint dit alsnog blokkeren.
-     * De gehele transactie wordt dan teruggedraaid.
+     * Een hernieuwde koppeling vervangt de oude actieve SSH-sleutel.
+     * Historie blijft in de database zichtbaar als "replaced".
      */
-    $clientInsert = $pdo->prepare(
-        'INSERT INTO clients (
-            client_id,
-            source_id,
-            source_url,
-            status,
-            approved_at,
-            approved_by,
-            client_version,
-            nextcloud_version
-        ) VALUES (
-            :client_id,
-            :source_id,
-            :source_url,
-            "active",
-            UTC_TIMESTAMP(),
-            :approved_by,
-            :client_version,
-            :nextcloud_version
-        )'
+    $replaceKeys = $pdo->prepare(
+        'UPDATE ssh_keys
+         SET status = "replaced"
+         WHERE client_id = :client_id
+           AND status = "active"'
     );
 
-    $clientInsert->execute([
+    $replaceKeys->execute([
         'client_id' => $clientId,
-        'source_id' => $request['source_id'],
-        'source_url' => $request['source_url'],
-        'approved_by' => $approvedBy,
-        'client_version' => $request['client_version'],
-        'nextcloud_version' => $request['nextcloud_version'],
     ]);
 
-    $keyInsert = $pdo->prepare(
-        'INSERT INTO ssh_keys (
-            client_id,
-            public_key,
-            fingerprint,
-            status
-        ) VALUES (
-            :client_id,
-            :public_key,
-            :fingerprint,
-            "active"
-        )'
+    $fingerprintLookup = $pdo->prepare(
+        'SELECT id, client_id
+         FROM ssh_keys
+         WHERE fingerprint = :fingerprint
+         LIMIT 1
+         FOR UPDATE'
     );
 
-    $keyInsert->execute([
-        'client_id' => $clientId,
-        'public_key' => $request['public_key'],
+    $fingerprintLookup->execute([
         'fingerprint' => $request['ssh_fingerprint'],
     ]);
+
+    $existingKey = $fingerprintLookup->fetch();
+
+    if (is_array($existingKey)) {
+        if ((string)$existingKey['client_id'] !== $clientId) {
+            throw new RuntimeException(
+                'SSH fingerprint already belongs to another client'
+            );
+        }
+
+        $keyUpdate = $pdo->prepare(
+            'UPDATE ssh_keys
+             SET public_key = :public_key,
+                 status = "active"
+             WHERE id = :id'
+        );
+
+        $keyUpdate->execute([
+            'public_key' => $request['public_key'],
+            'id' => $existingKey['id'],
+        ]);
+    } else {
+        $keyInsert = $pdo->prepare(
+            'INSERT INTO ssh_keys (
+                client_id,
+                public_key,
+                fingerprint,
+                status
+            ) VALUES (
+                :client_id,
+                :public_key,
+                :fingerprint,
+                "active"
+            )'
+        );
+
+        $keyInsert->execute([
+            'client_id' => $clientId,
+            'public_key' => $request['public_key'],
+            'fingerprint' => $request['ssh_fingerprint'],
+        ]);
+    }
 
     $storageRoot = rtrim(
         (string)$config->get(
@@ -172,33 +258,73 @@ try {
 
     $storagePath = $storageRoot . '/' . $clientId;
 
-    $storageInsert = $pdo->prepare(
-        'INSERT INTO storage_allocations (
-            client_id,
-            destination_type,
-            storage_host,
-            storage_port,
-            storage_user,
-            storage_path,
-            status
-        ) VALUES (
-            :client_id,
-            "ssh",
-            :storage_host,
-            :storage_port,
-            :storage_user,
-            :storage_path,
-            "active"
-        )'
+    /*
+     * Per client gebruiken we de bestaande storage allocation.
+     * Alleen bij de eerste approval wordt er één aangemaakt.
+     */
+    $storageLookup = $pdo->prepare(
+        'SELECT id
+         FROM storage_allocations
+         WHERE client_id = :client_id
+         ORDER BY id ASC
+         LIMIT 1
+         FOR UPDATE'
     );
 
-    $storageInsert->execute([
+    $storageLookup->execute([
         'client_id' => $clientId,
-        'storage_host' => $config->get('storage', 'host', 'localhost'),
-        'storage_port' => (int)$config->get('storage', 'port', 22),
-        'storage_user' => $config->get('storage', 'user', 'backupmanager'),
-        'storage_path' => $storagePath,
     ]);
+
+    $storage = $storageLookup->fetch();
+
+    if (is_array($storage)) {
+        $storageUpdate = $pdo->prepare(
+            'UPDATE storage_allocations
+             SET destination_type = "ssh",
+                 storage_host = :storage_host,
+                 storage_port = :storage_port,
+                 storage_user = :storage_user,
+                 storage_path = :storage_path,
+                 status = "active"
+             WHERE id = :id'
+        );
+
+        $storageUpdate->execute([
+            'storage_host' => $config->get('storage', 'host', 'localhost'),
+            'storage_port' => (int)$config->get('storage', 'port', 22),
+            'storage_user' => $config->get('storage', 'user', 'backupmanager'),
+            'storage_path' => $storagePath,
+            'id' => $storage['id'],
+        ]);
+    } else {
+        $storageInsert = $pdo->prepare(
+            'INSERT INTO storage_allocations (
+                client_id,
+                destination_type,
+                storage_host,
+                storage_port,
+                storage_user,
+                storage_path,
+                status
+            ) VALUES (
+                :client_id,
+                "ssh",
+                :storage_host,
+                :storage_port,
+                :storage_user,
+                :storage_path,
+                "active"
+            )'
+        );
+
+        $storageInsert->execute([
+            'client_id' => $clientId,
+            'storage_host' => $config->get('storage', 'host', 'localhost'),
+            'storage_port' => (int)$config->get('storage', 'port', 22),
+            'storage_user' => $config->get('storage', 'user', 'backupmanager'),
+            'storage_path' => $storagePath,
+        ]);
+    }
 
     $approve = $pdo->prepare(
         'UPDATE provider_requests

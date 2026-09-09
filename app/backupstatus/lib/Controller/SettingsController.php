@@ -10,6 +10,7 @@ use OCP\HintException;
 use OCP\Http\Client\IClientService;
 use OCP\IConfig;
 use OCP\IRequest;
+use OCP\IUserSession;
 use OCP\IL10N;
 use OCP\Mail\IMailer;
 use OCP\ServerVersion;
@@ -23,6 +24,7 @@ final class SettingsController extends Controller {
         private IMailer $mailer,
         private IClientService $clientService,
         private ServerVersion $serverVersion,
+        private IUserSession $userSession,
     ) {
         parent::__construct('backupstatus', $request);
     }
@@ -108,6 +110,20 @@ final class SettingsController extends Controller {
         $providerUrl = rtrim(trim($providerUrl), "/");
         $providerEmail = trim($providerEmail);
 
+        $user = $this->userSession->getUser();
+        $requesterEmail = $user !== null
+            ? trim((string)$user->getEMailAddress())
+            : "";
+
+        if (filter_var($requesterEmail, FILTER_VALIDATE_EMAIL) === false) {
+            return new JSONResponse([
+                "success" => false,
+                "error" => $this->l10n->t(
+                    "Your Nextcloud account does not have a valid email address"
+                ),
+            ], 400);
+        }
+
         if (
             filter_var($providerUrl, FILTER_VALIDATE_URL) === false
             || strtolower((string)parse_url($providerUrl, PHP_URL_SCHEME)) !== "https"
@@ -176,9 +192,10 @@ final class SettingsController extends Controller {
             "source_id" => $sourceId,
             "source_url" => $sourceUrl,
             "public_key" => $publicKey,
-            "client_version" => "0.1.0-beta2",
+            "client_version" => "0.1.0-beta3",
             "nextcloud_version" => $this->serverVersion->getVersionString(),
             "approval_email" => $providerEmail,
+            "requester_email" => $requesterEmail,
         ];
 
         try {
@@ -206,6 +223,7 @@ final class SettingsController extends Controller {
                 || !($data["success"] ?? false)
                 || empty($data["request_id"])
                 || empty($data["request_token"])
+                || empty($data["approval_token"])
             ) {
                 return new JSONResponse([
                     "success" => false,
@@ -254,9 +272,15 @@ final class SettingsController extends Controller {
                         . " | ssh-keygen -lf - -E sha256 2>/dev/null | awk '{print $2}'"
                     )) . "\n"
                     . "Nextcloud version: " . $this->serverVersion->getVersionString() . "\n"
-                    . "Backup Manager version: 0.1.0-beta2\n"
+                    . "Backup Manager version: 0.1.0-beta3\n"
                     . "Status: pending approval\n\n"
-                    . "This message is only a notification. Approval must be performed on the backup provider."
+                    . "Approve:\n"
+                    . $providerUrl . "/approval/" . rawurlencode((string)$data["request_id"])
+                    . "/approve?token=" . rawurlencode((string)$data["approval_token"]) . "\n\n"
+                    . "Reject:\n"
+                    . $providerUrl . "/approval/" . rawurlencode((string)$data["request_id"])
+                    . "/reject?token=" . rawurlencode((string)$data["approval_token"]) . "\n\n"
+                    . "These links are one-time approval links and expire with the request."
                 );
                 $this->mailer->send($message);
             } catch (Throwable $mailError) {
@@ -710,7 +734,7 @@ final class SettingsController extends Controller {
                 . "Source: " . $sourceId . "\n"
                 . "Source URL: " . $sourceUrl . "\n"
                 . "Nextcloud version: " . $this->serverVersion->getVersionString() . "\n"
-                . "Backup Manager version: 0.1.0-beta2\n"
+                . "Backup Manager version: 0.1.0-beta3\n"
                 . "Status: pending approval\n\n"
                 . "This is a notification only. Approval must be performed on the backup provider."
             );

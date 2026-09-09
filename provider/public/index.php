@@ -43,6 +43,12 @@ try {
     );
 
     $router->add(
+        'GET',
+        '#^/approval/(REQ-[0-9]{8}-[A-F0-9]{6})/(approve|reject)/?$#',
+        [$requestController, 'approvalAction']
+    );
+
+    $router->add(
         'POST',
         '#^/api/v1/clients/(BM-[0-9]{6})/deletion-requests/?$#',
         [$requestController, 'requestDeletion']
