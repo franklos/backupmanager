@@ -62,6 +62,30 @@ try {
 
     $router->add(
         'GET',
+        '#^/api/v1/management/clients/?$#',
+        [$requestController, 'managementClients']
+    );
+
+    $router->add(
+        'POST',
+        '#^/api/v1/management/clients/(BM-[0-9]{6})/(pause|resume)/?$#',
+        [$requestController, 'managementClientState']
+    );
+
+    $router->add(
+        'DELETE',
+        '#^/api/v1/management/clients/(BM-[0-9]{6})/?$#',
+        [$requestController, 'managementDeleteClient']
+    );
+
+    $router->add(
+        'POST',
+        '#^/api/v1/management/clients/(BM-[0-9]{6})/remove/?$#',
+        [$requestController, 'managementRemoveClient']
+    );
+
+    $router->add(
+        'GET',
         '#^/api/v1/requests/([A-Za-z0-9-]+)/?$#',
         [$requestController, 'status']
     );

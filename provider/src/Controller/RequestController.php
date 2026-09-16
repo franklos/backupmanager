@@ -491,6 +491,523 @@ final class RequestController
     }
 
 
+    public function managementClients(): never
+    {
+        $authorization = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+
+        if (!str_starts_with($authorization, 'Bearer ')) {
+            Response::json([
+                'success' => false,
+                'error' => 'Missing bearer token',
+            ], 401);
+        }
+
+        $suppliedToken = trim(substr($authorization, 7));
+        $tokenFile = (string)$this->config->get('api', 'management_token_file', '');
+
+        if (
+            $suppliedToken === ''
+            || $tokenFile === ''
+            || !is_readable($tokenFile)
+        ) {
+            Response::json([
+                'success' => false,
+                'error' => 'Management authentication unavailable',
+            ], 503);
+        }
+
+        $expectedToken = trim((string)file_get_contents($tokenFile));
+
+        if (
+            $expectedToken === ''
+            || !hash_equals($expectedToken, $suppliedToken)
+        ) {
+            Response::json([
+                'success' => false,
+                'error' => 'Invalid bearer token',
+            ], 403);
+        }
+
+        $pdo = $this->database->pdo();
+
+        $statement = $pdo->query(
+            'SELECT
+                client_id,
+                source_id,
+                source_url,
+                status,
+                contact_email,
+                approved_at
+             FROM clients
+             ORDER BY client_id ASC'
+        );
+
+        Response::json([
+            'success' => true,
+            'clients' => $statement->fetchAll(),
+        ]);
+    }
+
+
+    public function managementClientState(string $clientId, string $action): never
+    {
+        $authorization = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+        $tokenFile = (string)$this->config->get('api', 'management_token_file', '');
+
+        if (!str_starts_with($authorization, 'Bearer ')) {
+            Response::json([
+                'success' => false,
+                'error' => 'Missing bearer token',
+            ], 401);
+        }
+
+        $suppliedToken = trim(substr($authorization, 7));
+
+        if (
+            $suppliedToken === ''
+            || $tokenFile === ''
+            || !is_readable($tokenFile)
+        ) {
+            Response::json([
+                'success' => false,
+                'error' => 'Management authentication unavailable',
+            ], 503);
+        }
+
+        $expectedToken = trim((string)file_get_contents($tokenFile));
+
+        if (
+            $expectedToken === ''
+            || !hash_equals($expectedToken, $suppliedToken)
+        ) {
+            Response::json([
+                'success' => false,
+                'error' => 'Invalid bearer token',
+            ], 403);
+        }
+
+        if (!in_array($action, ['pause', 'resume'], true)) {
+            Response::json([
+                'success' => false,
+                'error' => 'Invalid management action',
+            ], 400);
+        }
+
+        $pdo = $this->database->pdo();
+
+        try {
+            $pdo->beginTransaction();
+
+            $statement = $pdo->prepare(
+                'SELECT
+                    c.status,
+                    sk.public_key,
+                    sa.storage_path
+                 FROM clients c
+                 LEFT JOIN ssh_keys sk
+                   ON sk.client_id = c.client_id
+                  AND sk.status = "active"
+                 LEFT JOIN storage_allocations sa
+                   ON sa.client_id = c.client_id
+                  AND sa.status IN ("active", "suspended")
+                 WHERE c.client_id = :client_id
+                 ORDER BY sk.id DESC, sa.id DESC
+                 LIMIT 1
+                 FOR UPDATE'
+            );
+
+            $statement->execute([
+                'client_id' => $clientId,
+            ]);
+
+            $clientData = $statement->fetch();
+
+            if (!is_array($clientData)) {
+                $pdo->rollBack();
+                Response::json([
+                    'success' => false,
+                    'error' => 'Client not found',
+                ], 404);
+            }
+
+            if ($clientData['status'] === 'terminated') {
+                $pdo->rollBack();
+                Response::json([
+                    'success' => false,
+                    'error' => 'Terminated client cannot be paused or resumed',
+                ], 409);
+            }
+
+            if ($action === 'pause') {
+                $command = sprintf(
+                    'sudo -n /usr/local/sbin/backupmanager-remove-authorized-key %s',
+                    escapeshellarg($clientId)
+                );
+
+                exec($command, $output, $exitCode);
+
+                if ($exitCode !== 0) {
+                    throw new \RuntimeException('Unable to suspend SSH access');
+                }
+
+                $updateClient = $pdo->prepare(
+                    'UPDATE clients SET status = "suspended" WHERE client_id = :client_id'
+                );
+                $updateClient->execute(['client_id' => $clientId]);
+
+                $updateStorage = $pdo->prepare(
+                    'UPDATE storage_allocations
+                     SET status = "suspended"
+                     WHERE client_id = :client_id
+                       AND status = "active"'
+                );
+                $updateStorage->execute(['client_id' => $clientId]);
+
+                $pdo->commit();
+
+                Response::json([
+                    'success' => true,
+                    'client_id' => $clientId,
+                    'status' => 'suspended',
+                ]);
+            }
+
+            $publicKey = trim((string)($clientData['public_key'] ?? ''));
+            $storagePath = trim((string)($clientData['storage_path'] ?? ''));
+
+            if ($publicKey === '' || $storagePath === '') {
+                throw new \RuntimeException('Client SSH configuration unavailable');
+            }
+
+            $keyParts = preg_split('/\s+/', $publicKey);
+
+            if (!is_array($keyParts) || count($keyParts) < 2) {
+                throw new \RuntimeException('Invalid SSH public key');
+            }
+
+            $publicKey = $keyParts[0] . ' ' . $keyParts[1];
+            $forcedCommand = '/usr/bin/rrsync -wo ' . escapeshellarg($storagePath);
+
+            $authorizedLine = sprintf(
+                'restrict,command="%s" %s bm-client=%s',
+                str_replace(['\\', '"'], ['\\\\', '\\"'], $forcedCommand),
+                $publicKey,
+                $clientId
+            );
+
+            $tmpFile = tempnam('/tmp', 'bm-auth-');
+
+            if (
+                $tmpFile === false
+                || file_put_contents($tmpFile, $authorizedLine . PHP_EOL, LOCK_EX) === false
+            ) {
+                throw new \RuntimeException('Unable to prepare SSH authorization');
+            }
+
+            $command = sprintf(
+                'sudo -n /usr/local/sbin/backupmanager-install-authorized-keys %s',
+                escapeshellarg($tmpFile)
+            );
+
+            exec($command, $output, $exitCode);
+
+            if ($exitCode !== 0) {
+                @unlink($tmpFile);
+                throw new \RuntimeException('Unable to restore SSH access');
+            }
+
+            $updateClient = $pdo->prepare(
+                'UPDATE clients SET status = "active" WHERE client_id = :client_id'
+            );
+            $updateClient->execute(['client_id' => $clientId]);
+
+            $updateStorage = $pdo->prepare(
+                'UPDATE storage_allocations
+                 SET status = "active"
+                 WHERE client_id = :client_id
+                   AND status = "suspended"'
+            );
+            $updateStorage->execute(['client_id' => $clientId]);
+
+            $pdo->commit();
+
+            Response::json([
+                'success' => true,
+                'client_id' => $clientId,
+                'status' => 'active',
+            ]);
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+
+            Response::json([
+                'success' => false,
+                'error' => 'Client state change failed',
+            ], 500);
+        }
+    }
+
+
+    public function managementRemoveClient(string $clientId): never
+    {
+        $authorization = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+        $tokenFile = (string)$this->config->get(
+            'api',
+            'management_token_file',
+            ''
+        );
+
+        if (!str_starts_with($authorization, 'Bearer ')) {
+            Response::json([
+                'success' => false,
+                'error' => 'Missing bearer token',
+            ], 401);
+        }
+
+        $suppliedToken = trim(substr($authorization, 7));
+
+        if (
+            $suppliedToken === ''
+            || $tokenFile === ''
+            || !is_readable($tokenFile)
+        ) {
+            Response::json([
+                'success' => false,
+                'error' => 'Management authentication unavailable',
+            ], 503);
+        }
+
+        $expectedToken = trim((string)file_get_contents($tokenFile));
+
+        if (
+            $expectedToken === ''
+            || !hash_equals($expectedToken, $suppliedToken)
+        ) {
+            Response::json([
+                'success' => false,
+                'error' => 'Invalid bearer token',
+            ], 403);
+        }
+
+        $pdo = $this->database->pdo();
+
+        try {
+            $client = $pdo->prepare(
+                'SELECT client_id, source_id, status
+                 FROM clients
+                 WHERE client_id = :client_id
+                 LIMIT 1'
+            );
+
+            $client->execute([
+                'client_id' => $clientId,
+            ]);
+
+            $clientData = $client->fetch();
+
+            if (!is_array($clientData)) {
+                Response::json([
+                    'success' => false,
+                    'error' => 'Client not found',
+                ], 404);
+            }
+
+            if (!in_array(
+                $clientData['status'],
+                ['active', 'suspended'],
+                true
+            )) {
+                Response::json([
+                    'success' => false,
+                    'error' => 'Client cannot be removed in current state',
+                ], 409);
+            }
+
+            $deletionRequestId =
+                'DEL-' . gmdate('Ymd') . '-'
+                . strtoupper(bin2hex(random_bytes(3)));
+
+            $insert = $pdo->prepare(
+                'INSERT INTO deletion_requests (
+                    deletion_request_id,
+                    client_id,
+                    status,
+                    delete_storage,
+                    requested_ip
+                ) VALUES (
+                    :deletion_request_id,
+                    :client_id,
+                    "pending",
+                    0,
+                    :requested_ip
+                )'
+            );
+
+            $insert->execute([
+                'deletion_request_id' => $deletionRequestId,
+                'client_id' => $clientId,
+                'requested_ip' => $_SERVER['REMOTE_ADDR'] ?? null,
+            ]);
+
+            $command = sprintf(
+                'php %s %s %s 2>&1',
+                escapeshellarg(
+                    dirname(__DIR__, 2) . '/bin/approve-deletion.php'
+                ),
+                escapeshellarg($deletionRequestId),
+                escapeshellarg('management')
+            );
+
+            exec($command, $output, $exitCode);
+
+            if ($exitCode !== 0) {
+                Response::json([
+                    'success' => false,
+                    'error' => 'Removal failed',
+                    'deletion_request_id' => $deletionRequestId,
+                ], 500);
+            }
+
+            Response::json([
+                'success' => true,
+                'client_id' => $clientId,
+                'status' => 'terminated',
+                'storage_deleted' => false,
+            ]);
+        } catch (\Throwable $e) {
+            Response::json([
+                'success' => false,
+                'error' => 'Removal failed',
+            ], 500);
+        }
+    }
+
+
+    public function managementDeleteClient(string $clientId): never
+    {
+        $authorization = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+        $tokenFile = (string)$this->config->get('api', 'management_token_file', '');
+
+        if (!str_starts_with($authorization, 'Bearer ')) {
+            Response::json([
+                'success' => false,
+                'error' => 'Missing bearer token',
+            ], 401);
+        }
+
+        $suppliedToken = trim(substr($authorization, 7));
+
+        if (
+            $suppliedToken === ''
+            || $tokenFile === ''
+            || !is_readable($tokenFile)
+        ) {
+            Response::json([
+                'success' => false,
+                'error' => 'Management authentication unavailable',
+            ], 503);
+        }
+
+        $expectedToken = trim((string)file_get_contents($tokenFile));
+
+        if (
+            $expectedToken === ''
+            || !hash_equals($expectedToken, $suppliedToken)
+        ) {
+            Response::json([
+                'success' => false,
+                'error' => 'Invalid bearer token',
+            ], 403);
+        }
+
+        $pdo = $this->database->pdo();
+
+        try {
+            $pdo->beginTransaction();
+
+            $statement = $pdo->prepare(
+                'SELECT client_id, source_id, status
+                 FROM clients
+                 WHERE client_id = :client_id
+                 LIMIT 1
+                 FOR UPDATE'
+            );
+            $statement->execute(['client_id' => $clientId]);
+
+            $client = $statement->fetch();
+
+            if (!is_array($client)) {
+                $pdo->rollBack();
+
+                Response::json([
+                    'success' => false,
+                    'error' => 'Client not found',
+                ], 404);
+            }
+
+            if ($client['status'] !== 'terminated') {
+                $pdo->rollBack();
+
+                Response::json([
+                    'success' => false,
+                    'error' => 'Only terminated clients can be permanently deleted',
+                ], 409);
+            }
+
+            $removeStorage = sprintf(
+                'sudo -n /usr/local/sbin/backupmanager-remove-storage %s',
+                escapeshellarg($clientId)
+            );
+
+            exec($removeStorage, $output, $exitCode);
+
+            if ($exitCode !== 0) {
+                throw new \RuntimeException(
+                    'Unable to remove client backup data'
+                );
+            }
+
+            $event = $pdo->prepare(
+                'INSERT INTO provider_events
+                    (client_id, event_type, severity, details)
+                 VALUES
+                    (:client_id, "client.deleted", "warning", :details)'
+            );
+
+            $event->execute([
+                'client_id' => $clientId,
+                'details' => json_encode([
+                    'client_id' => $clientId,
+                    'source_id' => $client['source_id'],
+                ], JSON_UNESCAPED_SLASHES),
+            ]);
+
+            $delete = $pdo->prepare(
+                'DELETE FROM clients WHERE client_id = :client_id'
+            );
+            $delete->execute(['client_id' => $clientId]);
+
+            $pdo->commit();
+
+            Response::json([
+                'success' => true,
+                'client_id' => $clientId,
+                'status' => 'deleted',
+            ]);
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+
+            Response::json([
+                'success' => false,
+                'error' => 'Client deletion failed',
+            ], 500);
+        }
+    }
+
+
     public function clientStatus(string $clientId): never
     {
         $token = $_SERVER['HTTP_AUTHORIZATION'] ?? '';

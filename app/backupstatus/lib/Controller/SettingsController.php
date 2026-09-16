@@ -304,6 +304,158 @@ final class SettingsController extends Controller {
         }
     }
 
+    public function managementClients(): JSONResponse {
+        $providerUrl = rtrim(
+            $this->config->getAppValue("backupstatus", "provider_url", ""),
+            "/"
+        );
+
+        $tokenFile = "/etc/backupmanager/management-token";
+
+        if ($providerUrl === "" || !is_readable($tokenFile)) {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Management connection unavailable",
+            ], 503);
+        }
+
+        $managementToken = trim((string)file_get_contents($tokenFile));
+
+        if ($managementToken === "") {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Management authentication unavailable",
+            ], 503);
+        }
+
+        try {
+            $client = $this->clientService->newClient();
+
+            $response = $client->get(
+                $providerUrl . "/api/v1/management/clients",
+                [
+                    "headers" => [
+                        "Accept" => "application/json",
+                        "Authorization" => "Bearer " . $managementToken,
+                    ],
+                    "timeout" => 30,
+                    "http_errors" => false,
+                ]
+            );
+
+            if ($response->getStatusCode() !== 200) {
+                return new JSONResponse([
+                    "success" => false,
+                    "error" => "Unable to retrieve provider clients",
+                ], 502);
+            }
+
+            $data = json_decode((string)$response->getBody(), true);
+
+            if (!is_array($data) || !($data["success"] ?? false)) {
+                return new JSONResponse([
+                    "success" => false,
+                    "error" => "Invalid provider response",
+                ], 502);
+            }
+
+            return new JSONResponse([
+                "success" => true,
+                "clients" => $data["clients"] ?? [],
+            ]);
+        } catch (\Throwable $e) {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Provider unavailable",
+            ], 502);
+        }
+    }
+
+
+    public function managementClientAction(
+        string $clientId,
+        string $clientAction
+    ): JSONResponse {
+        $providerUrl = rtrim(
+            $this->config->getAppValue("backupstatus", "provider_url", ""),
+            "/"
+        );
+
+        $tokenFile = "/etc/backupmanager/management-token";
+
+        if (
+            $providerUrl === ""
+            || !is_readable($tokenFile)
+        ) {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Management connection unavailable",
+            ], 503);
+        }
+
+        if (
+            !preg_match('/^BM-[0-9]{6}$/', $clientId)
+            || !in_array($clientAction, ["pause", "resume", "remove", "delete"], true)
+        ) {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Invalid client action",
+            ], 400);
+        }
+
+        $managementToken = trim((string)file_get_contents($tokenFile));
+
+        try {
+            $client = $this->clientService->newClient();
+
+            $url = $providerUrl
+                . "/api/v1/management/clients/"
+                . rawurlencode($clientId);
+
+            $options = [
+                "headers" => [
+                    "Accept" => "application/json",
+                    "Authorization" => "Bearer " . $managementToken,
+                ],
+                "timeout" => 30,
+                "http_errors" => false,
+            ];
+
+            if ($clientAction === "delete") {
+                $response = $client->delete($url, $options);
+            } else {
+                $response = $client->post(
+                    $url . "/" . rawurlencode($clientAction),
+                    $options
+                );
+            }
+
+            $statusCode = $response->getStatusCode();
+            $data = json_decode((string)$response->getBody(), true);
+
+            if (
+                $statusCode < 200
+                || $statusCode >= 300
+                || !is_array($data)
+                || !($data["success"] ?? false)
+            ) {
+                return new JSONResponse([
+                    "success" => false,
+                    "error" => $data["error"]
+                        ?? "Provider action failed",
+                ], 502);
+            }
+
+            return new JSONResponse($data);
+        } catch (Throwable $e) {
+            return new JSONResponse([
+                "success" => false,
+                "error" => "Provider unavailable",
+            ], 502);
+        }
+    }
+
+
     public function providerStatus(): JSONResponse {
         $providerUrl = rtrim(
             $this->config->getAppValue("backupstatus", "provider_url", ""),

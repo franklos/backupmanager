@@ -946,6 +946,170 @@ if (restoreContinue) {
 
     }
 
+    async function loadManagementClients() {
+        const container = document.getElementById("backupstatus-clients");
+
+        if (!container) {
+            return;
+        }
+
+        try {
+            const response = await fetch(
+                OC.generateUrl("/apps/backupstatus/settings/management-clients"),
+                {
+                    method: "GET",
+                    headers: {
+                        "Accept": "application/json",
+                        "requesttoken": OC.requestToken
+                    }
+                }
+            );
+
+            const data = await response.json();
+
+            if (!response.ok || !data.success) {
+                throw new Error(data.error || "Unable to load clients");
+            }
+
+            container.textContent = "";
+
+            if (!Array.isArray(data.clients) || data.clients.length === 0) {
+                container.textContent =
+                    OC.L10N.translate("backupstatus", "No clients found.");
+                return;
+            }
+
+            data.clients.forEach(function (client) {
+                const row = document.createElement("div");
+                row.className = "backupstatus-client-row";
+
+                const text = document.createElement("span");
+                text.textContent =
+                    client.client_id + " | " +
+                    client.source_id + " | " +
+                    client.status;
+
+                row.appendChild(text);
+
+                async function runClientAction(action, button) {
+                    button.disabled = true;
+
+                    try {
+                        const response = await fetch(
+                            OC.generateUrl(
+                                "/apps/backupstatus/settings/management-clients/{clientId}/{action}",
+                                {
+                                    clientId: client.client_id,
+                                    action: action
+                                }
+                            ),
+                            {
+                                method: "POST",
+                                headers: {
+                                    "Accept": "application/json",
+                                    "requesttoken": OC.requestToken
+                                }
+                            }
+                        );
+
+                        const raw = await response.text();
+                        let result = null;
+
+                        if (raw) {
+                            try {
+                                result = JSON.parse(raw);
+                            } catch (e) {
+                                throw new Error(
+                                    "HTTP " + response.status + ": " + raw
+                                );
+                            }
+                        }
+
+                        if (!response.ok || !result || !result.success) {
+                            throw new Error(
+                                (result && result.error)
+                                    ? result.error
+                                    : "HTTP " + response.status + ": empty response"
+                            );
+                        }
+
+                        await loadManagementClients();
+                    } catch (error) {
+                        button.disabled = false;
+                        window.alert(
+                            error.message ||
+                            OC.L10N.translate("backupstatus", "Client action failed")
+                        );
+                    }
+                }
+
+                if (client.status === "active" || client.status === "suspended") {
+                    const action = client.status === "active" ? "pause" : "resume";
+                    const stateButton = document.createElement("button");
+
+                    stateButton.type = "button";
+                    stateButton.textContent =
+                        action === "pause"
+                            ? OC.L10N.translate("backupstatus", "Pause")
+                            : OC.L10N.translate("backupstatus", "Resume");
+
+                    stateButton.addEventListener("click", function () {
+                        runClientAction(action, stateButton);
+                    });
+
+                    row.appendChild(stateButton);
+
+                    const removeButton = document.createElement("button");
+                    removeButton.type = "button";
+                    removeButton.textContent =
+                        OC.L10N.translate("backupstatus", "Remove");
+
+                    removeButton.addEventListener("click", function () {
+                        if (!window.confirm(
+                            "Are you sure you want to remove " + client.client_id +
+                            "? Backup data will be preserved."
+                        )) {
+                            return;
+                        }
+
+                        runClientAction("remove", removeButton);
+                    });
+
+                    row.appendChild(removeButton);
+                }
+
+                if (client.status === "terminated") {
+                    const deleteButton = document.createElement("button");
+                    deleteButton.type = "button";
+                    deleteButton.textContent =
+                        OC.L10N.translate("backupstatus", "Delete permanently");
+
+                    deleteButton.addEventListener("click", function () {
+                        if (!window.confirm(
+                            "Are you sure you want to permanently delete " + client.client_id +
+                            "? All backup data will also be deleted. This cannot be undone."
+                        )) {
+                            return;
+                        }
+
+                        runClientAction("delete", deleteButton);
+                    });
+
+                    row.appendChild(deleteButton);
+                }
+
+                container.appendChild(row);
+            });
+        } catch (error) {
+            container.textContent =
+                error.message ||
+                OC.L10N.translate("backupstatus", "Unable to load clients.");
+        }
+    }
+
+    document.addEventListener("DOMContentLoaded", loadManagementClients);
+
+
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ready);
     else ready();
 })();

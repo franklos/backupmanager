@@ -1,0 +1,26 @@
+#!/bin/bash
+set -euo pipefail
+
+CLIENT_ID="${1:-}"
+ROOT="/var/lib/backupmanager-provider"
+
+if [[ ! "$CLIENT_ID" =~ ^BM-[0-9]{6}$ ]]; then
+    echo "Invalid client ID" >&2
+    exit 1
+fi
+
+TARGET="$ROOT/$CLIENT_ID"
+
+if [[ ! -d "$TARGET" ]]; then
+    exit 0
+fi
+
+REAL_ROOT="$(realpath "$ROOT")"
+REAL_TARGET="$(realpath "$TARGET")"
+
+if [[ "$REAL_TARGET" != "$REAL_ROOT/$CLIENT_ID" ]]; then
+    echo "Unsafe storage path" >&2
+    exit 1
+fi
+
+rm -rf --one-file-system -- "$REAL_TARGET"

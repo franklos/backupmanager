@@ -339,6 +339,18 @@ $weekDays = [
         </div>
     </div>
 
+    <div class="backupmanager-card backupstatus-clients">
+        <h3><?php p($l->t('Clients')); ?></h3>
+
+        <p>
+            <?php p($l->t('Backup Manager clients registered with this provider.')); ?>
+        </p>
+
+        <div id="backupstatus-clients">
+            <p><?php p($l->t('Loading clients...')); ?></p>
+        </div>
+    </div>
+
     <div class="backupmanager-card backupstatus-removal">
         <h3><?php p($l->t('Remove Backup Manager')); ?></h3>
 
