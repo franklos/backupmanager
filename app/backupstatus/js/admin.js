@@ -231,7 +231,7 @@
             }
         }
 
-        if (requestButton) {
+        if (requestButton && requestButton.disabled) {
             checkProviderStatus();
 
             window.setInterval(checkProviderStatus, 15000);
