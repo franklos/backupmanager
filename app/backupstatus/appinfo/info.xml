@@ -5,7 +5,7 @@
     <name>Backup Manager</name>
     <summary>Backup and recovery management for Nextcloud.</summary>
     <description>Manage and monitor automated data and database backups, backup storage, and recovery from within Nextcloud. Backup Manager is designed for provider-neutral backup storage and secure recovery procedures.</description>
-    <version>0.2.0</version>
+    <version>0.2.1</version>
     <licence>AGPL-3.0-or-later</licence>
     <author>Frank Los</author>
     <namespace>BackupStatus</namespace>

@@ -1,9 +1,131 @@
-#backupstatus-admin { max-width: 960px; margin: auto; padding: 24px; }
-#backupstatus-admin fieldset { border: 1px solid var(--color-border); border-radius: 12px; margin: 20px 0; padding: 20px; }
-#backupstatus-admin legend { font-weight: bold; padding: 0 8px; }
-#backupstatus-admin label { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 12px 0; }
-#backupstatus-admin input:not([type=checkbox]), #backupstatus-admin select, #backupstatus-admin textarea { min-width: 240px; max-width: 100%; }
-#backupstatus-admin button { margin: 6px; }
+#backupstatus-admin { max-width: 900px; margin: auto; padding: 24px; }
+#backupstatus-admin .bm-accordion { border: 1px solid var(--color-border); border-radius: 10px; margin: 12px 0; background: var(--color-main-background); overflow: hidden; }
+#backupstatus-admin .bm-accordion > summary { cursor: pointer; padding: 16px 20px; font-size: 1.1em; font-weight: 600; list-style-position: inside; }
+#backupstatus-admin .bm-accordion[open] > summary { border-bottom: 1px solid var(--color-border); }
+#backupstatus-admin .bm-panel { padding: 18px 20px; }
+#backupstatus-admin fieldset { border: 0; margin: 0; padding: 0; }
+#backupstatus-admin legend, #backupstatus-admin h3 { font-weight: 600; margin: 0 0 14px; }
+#backupstatus-admin label { display: flex; flex-direction: column; align-items: stretch; gap: 6px; margin: 14px 0; }
+#backupstatus-admin label.bm-check { flex-direction: row; align-items: center; }
+#backupstatus-admin input:not([type=checkbox]), #backupstatus-admin select, #backupstatus-admin textarea { box-sizing: border-box; width: min(100%, 520px); min-height: 38px; padding: 8px; }
+#backupstatus-admin textarea { min-height: 90px; font-family: monospace; }
+#backupstatus-admin button { margin: 5px 5px 5px 0; }
+#backupstatus-admin .bm-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 #backupstatus-admin [hidden] { display: none !important; }
-#backupstatus-admin [role=status] { white-space: pre-wrap; overflow-wrap: anywhere; }
+#backupstatus-admin [role=status], #backupstatus-admin [role=alert] { white-space: pre-wrap; overflow-wrap: anywhere; }
 #backupstatus-admin .backupstatus-client-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 0; }
+#backupstatus-admin .bm-status { display: grid; grid-template-columns: minmax(170px, 1fr) 2fr; gap: 10px 16px; margin: 0; }
+#backupstatus-admin .bm-status dt { font-weight: 600; }
+#backupstatus-admin .bm-status dd { margin: 0; overflow-wrap: anywhere; }
+@media (max-width: 640px) { #backupstatus-admin { padding: 12px; } #backupstatus-admin .bm-panel { padding: 14px; } #backupstatus-admin .bm-status { display: block; } #backupstatus-admin .bm-status dt { margin-top: 10px; } }
+#backupstatus-admin .bm-accordion { --bm-accent: var(--color-border); border-left: 4px solid var(--bm-accent); }
+#backupstatus-admin .bm-accordion.bm-status-green { --bm-accent: var(--color-success); }
+#backupstatus-admin .bm-accordion.bm-status-orange { --bm-accent: var(--color-warning); }
+#backupstatus-admin .bm-accordion.bm-status-red { --bm-accent: var(--color-error); }
+#backupstatus-admin .bm-accordion.bm-status-neutral { --bm-accent: var(--color-border); }
+#backupstatus-admin .bm-status-label { float: right; font-size: .8em; font-weight: 600; color: var(--bm-accent); }
+#backupstatus-admin .bm-technical { margin-top: 16px; border-top: 1px solid var(--color-border); padding-top: 10px; }
+#backupstatus-admin .bm-technical summary { cursor: pointer; font-weight: 600; }
+/* Explicit form geometry: Nextcloud's global admin styles must not collapse these groups. */
+#backupstatus-admin { max-width: 760px; width: 100%; box-sizing: border-box; }
+#backupstatus-admin *, #backupstatus-admin *::before, #backupstatus-admin *::after { box-sizing: border-box; }
+#backupstatus-admin .bm-accordion { display: block; width: 100%; border-left: 5px solid var(--bm-accent); }
+#backupstatus-admin .bm-accordion > summary { display: flex; align-items: center; gap: 10px; min-height: 54px; padding: 15px 18px; border: 0; list-style: none; }
+#backupstatus-admin .bm-accordion > summary::-webkit-details-marker { display: none; }
+#backupstatus-admin .bm-accordion > summary::after { content: '›'; margin-left: auto; font-size: 1.7rem; line-height: 1; transform: rotate(0deg); transition: transform .15s ease; color: var(--color-text-maxcontrast); }
+#backupstatus-admin .bm-accordion[open] > summary::after { transform: rotate(90deg); }
+#backupstatus-admin .bm-accordion > summary:hover, #backupstatus-admin .bm-accordion > summary:focus-visible { background: var(--color-background-hover); }
+#backupstatus-admin .bm-status-label { float: none; flex: 0 0 auto; margin-left: auto; padding: 3px 9px; border: 1px solid currentColor; border-radius: 999px; font-size: .75rem; line-height: 1.2; white-space: nowrap; }
+#backupstatus-admin .bm-accordion > summary::after { margin-left: 0; }
+#backupstatus-admin .bm-panel { display: block; width: 100%; max-width: 680px; padding: 20px 22px 24px; }
+#backupstatus-admin .bm-panel fieldset { display: block; width: 100%; max-width: 640px; }
+#backupstatus-admin .bm-panel label:not(.bm-check) { display: flex !important; flex-direction: column !important; align-items: stretch !important; width: 100%; max-width: 560px; gap: 6px; margin: 0 0 16px; }
+#backupstatus-admin .bm-panel label:not(.bm-check) > input, #backupstatus-admin .bm-panel label:not(.bm-check) > select, #backupstatus-admin .bm-panel label:not(.bm-check) > textarea { display: block; width: 100%; max-width: 560px; margin: 0; }
+#backupstatus-admin .bm-panel label.bm-check { display: flex !important; flex-direction: row !important; align-items: center !important; width: 100%; gap: 9px; margin: 0 0 12px; }
+#backupstatus-admin .bm-panel label.bm-check input[type=checkbox] { flex: 0 0 auto; width: 18px; height: 18px; margin: 0; }
+#backupstatus-admin .bm-panel label.bm-check span { display: block; }
+#backupstatus-admin .bm-panel p { max-width: 640px; margin: 8px 0 16px; }
+#backupstatus-admin .bm-actions { display: flex !important; align-items: center; flex-wrap: wrap; gap: 10px; margin: 20px 0 4px; }
+#backupstatus-admin .bm-actions button { margin: 0; }
+#backupstatus-admin .bm-secondary, #backupstatus-admin .bm-danger { margin-top: 18px; border: 1px solid var(--color-border-dark); border-left: 3px solid var(--color-border-dark); border-radius: 8px; }
+#backupstatus-admin .bm-secondary > summary, #backupstatus-admin .bm-danger > summary { display: flex; align-items: center; cursor: pointer; padding: 11px 14px; font-weight: 600; list-style: none; }
+#backupstatus-admin .bm-secondary > summary::-webkit-details-marker, #backupstatus-admin .bm-danger > summary::-webkit-details-marker { display: none; }
+#backupstatus-admin .bm-secondary > summary::after, #backupstatus-admin .bm-danger > summary::after { content: '›'; margin-left: auto; font-size: 1.4rem; transform: rotate(0deg); }
+#backupstatus-admin .bm-secondary[open] > summary::after, #backupstatus-admin .bm-danger[open] > summary::after { transform: rotate(90deg); }
+#backupstatus-admin .bm-secondary-panel { padding: 12px 14px 16px; }
+#backupstatus-admin .bm-danger { border-left-color: var(--color-error); }
+#backupstatus-admin .bm-danger button { margin-top: 8px; }
+@media (max-width: 700px) { #backupstatus-admin { padding: 12px; } #backupstatus-admin .bm-panel { padding: 16px; } }
+/* Final theme-safe overrides for the rendered Nextcloud admin DOM. */
+#backupstatus-admin .bm-accordion.bm-status-green { border-left-color: var(--color-success, #2e7d32) !important; }
+#backupstatus-admin .bm-accordion.bm-status-orange { border-left-color: var(--color-warning, #ed6c02) !important; }
+#backupstatus-admin .bm-accordion.bm-status-red { border-left-color: var(--color-error, #d32f2f) !important; }
+#backupstatus-admin .bm-accordion.bm-status-neutral { border-left-color: var(--color-border, #9aa0a6) !important; }
+#backupstatus-admin .bm-accordion > summary { background: var(--color-main-background, #fff) !important; color: var(--color-main-text, #222) !important; cursor: pointer !important; }
+#backupstatus-admin .bm-accordion > summary::after { color: var(--color-text-maxcontrast, #666) !important; }
+#backupstatus-admin .bm-accordion.bm-status-green > summary { border-left: 4px solid var(--color-success, #2e7d32) !important; }
+#backupstatus-admin .bm-accordion.bm-status-orange > summary { border-left: 4px solid var(--color-warning, #ed6c02) !important; }
+#backupstatus-admin .bm-accordion.bm-status-red > summary { border-left: 4px solid var(--color-error, #d32f2f) !important; }
+#backupstatus-admin .bm-accordion.bm-status-neutral > summary { border-left: 4px solid var(--color-border, #9aa0a6) !important; }
+#backupstatus-admin .bm-status-label { display: inline-flex !important; align-items: center; color: var(--bm-accent, var(--color-text-maxcontrast, #666)) !important; border-color: currentColor !important; }
+#backupstatus-admin #bm-ssh-fields, #backupstatus-admin #bm-s3-fields { display: block !important; width: 100% !important; }
+#backupstatus-admin .bm-panel .bm-status { display: grid !important; grid-template-columns: minmax(150px, 0.8fr) minmax(0, 2fr) !important; width: 100% !important; row-gap: 12px; }
+#backupstatus-admin .bm-day-group { border: 0; padding: 0; margin: 0 0 16px; }
+#backupstatus-admin .bm-day-group > legend { margin-bottom: 8px; }
+#backupstatus-admin .bm-day-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 6px 12px; max-width: 560px; }
+#backupstatus-admin .bm-day-options .bm-check { margin: 0 !important; }
+/* Keep all binary controls aligned despite Nextcloud's generic admin form rules. */
+#backupstatus-admin label.bm-check,
+#backupstatus-admin .bm-panel label.bm-check,
+#backupstatus-admin .bm-day-options label.bm-check {
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    justify-content: flex-start !important;
+    gap: 10px !important;
+    width: 100% !important;
+    max-width: none !important;
+    min-height: 24px;
+    margin: 0 0 12px !important;
+    padding: 0 !important;
+}
+#backupstatus-admin label.bm-check > input[type="checkbox"],
+#backupstatus-admin label.bm-check > input[type="radio"] {
+    appearance: auto;
+    display: block !important;
+    flex: 0 0 18px !important;
+    width: 18px !important;
+    min-width: 18px !important;
+    max-width: 18px !important;
+    height: 18px !important;
+    min-height: 18px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+}
+#backupstatus-admin label.bm-check > span {
+    display: block !important;
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+    margin: 0 !important;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+#backupstatus-admin .bm-day-options {
+    display: grid !important;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    align-items: stretch;
+    gap: 8px 14px !important;
+    width: 100%;
+    max-width: 560px;
+}
+#backupstatus-admin .bm-day-options label.bm-check { margin: 0 !important; }
+/* Release status palette: fixed, opaque text/accent colours. */
+#backupstatus-admin .bm-accordion.bm-status-neutral { --bm-accent: #f6b006; border-left-color: #f6b006 !important; }
+#backupstatus-admin .bm-accordion.bm-status-green { --bm-accent: #06b515; border-left-color: #06b515 !important; }
+#backupstatus-admin .bm-accordion.bm-status-orange,
+#backupstatus-admin .bm-accordion.bm-status-red { --bm-accent: #e50a0a; border-left-color: #e50a0a !important; }
+#backupstatus-admin .bm-accordion.bm-status-neutral > summary { border-left-color: #f6b006 !important; }
+#backupstatus-admin .bm-accordion.bm-status-green > summary { border-left-color: #06b515 !important; }
+#backupstatus-admin .bm-accordion.bm-status-orange > summary,
+#backupstatus-admin .bm-accordion.bm-status-red > summary { border-left-color: #e50a0a !important; }
+#backupstatus-admin .bm-status-label { color: var(--bm-accent) !important; opacity: 1 !important; background: transparent !important; }

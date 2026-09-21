@@ -42,6 +42,68 @@ def payload():
     return data
 
 
+def host_status(cfg):
+    result = {'host_trusted': False, 'host_key': '', 'host_fingerprint': '', 'host_error': ''}
+    file = Path(cfg['known_hosts'])
+    if not cfg['ssh_host'] or not file.is_file() or file.is_symlink():
+        return result
+    host = cfg['ssh_host'] if cfg['ssh_port'] == 22 else '[' + cfg['ssh_host'] + ']:' + str(cfg['ssh_port'])
+    found = subprocess.run(['ssh-keygen', '-F', host, '-f', str(file)], capture_output=True, text=True, timeout=5)
+    if found.returncode not in (0, 1):
+        raise RuntimeError('Unable to read SSH host trust')
+    for line in found.stdout.splitlines():
+        parts = line.split()
+        if not parts or parts[0].startswith('#'):
+            continue
+        if parts[0].startswith('@'):
+            continue  # A CA or revoked key is not a directly pinned host key.
+        if len(parts) < 3:
+            continue
+        key = ' '.join(parts[1:3])
+        checked = subprocess.run(['ssh-keygen', '-l', '-E', 'sha256', '-f', '/dev/stdin'],
+                                 input=key + '\n', capture_output=True, text=True, timeout=5)
+        if checked.returncode == 0:
+            result.update(host_trusted=True, host_key=key, host_fingerprint=checked.stdout.split()[1])
+            break
+    state = Path(cfg['runtime']) / 'status/host-verification.json'
+    if state.exists():
+        previous = json.loads(state.read_text())
+        if previous.get('identity') == host_identity(cfg) and previous.get('error'):
+            result.update(host_trusted=False, host_error=previous['error'])
+    return result
+
+
+def host_identity(cfg):
+    return hashlib.sha256(json.dumps([cfg[k] for k in
+        ('ssh_host', 'ssh_port', 'ssh_user', 'ssh_path', 'ssh_read_key', 'known_hosts')]).encode()
+        + Path(cfg['known_hosts']).read_bytes()).hexdigest()
+
+
+def host_trusted(cfg):
+    return host_status(cfg)['host_trusted']
+
+
+def verify_host(cfg):
+    with lock(cfg['runtime']):
+        status = host_status(cfg)
+        if not status['host_key']:
+            raise ValueError('No valid SSH host pin for the saved host and port; obtain a verified key from the provider')
+        identity = host_identity(cfg)
+        state = Path(cfg['runtime']) / 'status/host-verification.json'
+        try:
+            storage = backend(cfg)
+            if cfg['destination'] != 'ssh':
+                raise ValueError('SSH storage must be selected')
+            storage.rsync(['--list-only', storage.remote('')], read=True, timeout=25)
+        except Exception as failure:
+            print('Backup Manager host verification: ' + type(failure).__name__ + ': ' + str(failure), file=sys.stderr)
+            error = 'SSH host verification failed; check the pinned key, access and connectivity. See the server log.'
+            atomic_json(state, {'identity': identity, 'error': error})
+            raise RuntimeError(error) from None
+        atomic_json(state, {'identity': identity, 'error': ''})
+        return {'settings': host_status(cfg)}
+
+
 def safe_status(cfg):
     file = Path(cfg['runtime']) / 'status/state.json'
     result = json.loads(file.read_text()) if file.exists() else {'state': 'missing'}
@@ -98,6 +160,8 @@ def save(cfg, data):
 
 def trust(cfg, data):
     """Explicit out-of-band host key pinning; never TOFU/ssh-keyscan auto-accept."""
+    if not data.get('key') and not data.get('fingerprint'):
+        return verify_host(cfg)
     key = data.get('key', '')
     parts = key.strip().split()
     if len(parts) != 2 or parts[0] not in ('ssh-ed25519', 'ssh-rsa', 'ecdsa-sha2-nistp256'):
@@ -115,7 +179,7 @@ def trust(cfg, data):
             raise ValueError('Symlink trust file refused')
         file.write_text(host + ' ' + ' '.join(parts) + '\n')
         os.chmod(file, 0o644)
-    return {'fingerprint': fingerprint}
+    return verify_host(cfg)
 
 
 def enqueue(cfg, data):
@@ -211,7 +275,9 @@ def worker(job_id):
 
 def dispatch(action, cfg, data):
     if action == 'settings':
-        return {'settings': {key: cfg[key] for key in PUBLIC}}
+        settings = {key: cfg[key] for key in PUBLIC}
+        settings.update(host_status(cfg))
+        return {'settings': settings}
     if action == 'save':
         return save(cfg, data)
     if action == 'trust':
@@ -246,9 +312,12 @@ def main():
     os.umask(0o077)
     try:
         action = sys.argv[1] if len(sys.argv) == 2 else ''
-        result = dispatch(action, load(), payload())
+        # Commands that only read state must not wait for stdin from an interactive shell.
+        data = {} if action in ('settings', 'status', 'inventory') else payload()
+        result = dispatch(action, load(), data)
         print(json.dumps({'success': True} | result))
     except Exception as error:
+        print('Backup Manager control failure: ' + type(error).__name__ + ': ' + str(error), file=sys.stderr)
         message = str(error) if type(error) in (ValueError, RuntimeError, JobCancelled) else 'Operation unavailable; check installation and configuration'
         print(json.dumps({'success': False, 'error': message}))
         return 1

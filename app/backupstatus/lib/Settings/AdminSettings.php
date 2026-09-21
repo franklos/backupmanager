@@ -13,6 +13,8 @@ final class AdminSettings implements ISettings {
             'clientId' => $this->config->getAppValue('backupstatus', 'provider_client_id', ''),
             'providerPending' => $this->config->getAppValue('backupstatus', 'provider_request_id', '') !== '',
             'recoveryPending' => $this->config->getAppValue('backupstatus', 'recovery_request_id', '') !== '',
+            'providerStatus' => $this->config->getAppValue('backupstatus', 'provider_request_status', 'none'),
+            'recoveryStatus' => $this->config->getAppValue('backupstatus', 'recovery_request_status', 'none'),
         ]);
     }
     public function getSection(): string { return 'backupstatus'; }

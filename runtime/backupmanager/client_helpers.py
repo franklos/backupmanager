@@ -23,6 +23,19 @@ def source_id(cfg):
     return 'nc-' + hashlib.sha256(value.encode()).hexdigest()[:32]
 
 
+def public_key(path):
+    """Return a validated public key, deriving it from the private key if needed."""
+    private = Path(path)
+    public = Path(str(private) + '.pub')
+    if public.exists():
+        return key(public.read_text().strip())
+    if not private.is_file() or private.is_symlink():
+        raise ValueError('SSH private key is unavailable')
+    result = subprocess.run(['ssh-keygen', '-y', '-f', str(private)], check=True,
+                            capture_output=True, text=True)
+    return key(result.stdout.strip())
+
+
 def request_info(cfg, recovery=False):
     directory = Path(cfg['runtime']) / ('recovery' if recovery else '.ssh')
     directory.mkdir(mode=0o700, exist_ok=True)
@@ -37,8 +50,8 @@ def request_info(cfg, recovery=False):
     if cfg['source_id'] != identity:
         cfg['source_id'] = identity
         atomic_json(CONFIG, cfg)
-    return {'source_id': identity, 'public_key': key(Path(str(paths[0]) + '.pub').read_text()),
-            'restore_public_key': key(Path(str(paths[1]) + '.pub').read_text())}
+    return {'source_id': identity, 'public_key': public_key(paths[0]),
+            'restore_public_key': public_key(paths[1])}
 
 
 def activate(cfg):

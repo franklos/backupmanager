@@ -1,0 +1,31 @@
+'use strict';
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const elements = {};
+let color;
+const label = {};
+const section = {classList: {remove() {}, add(v) { color = v; }}, querySelector: () => label};
+const root = {dataset: {}, querySelectorAll: () => [section, section]};
+const context = {OC: {L10N: {translate: (_, text) => text}}, document: {readyState: 'loading', addEventListener() {}, getElementById: id => elements[id] ||= {}}};
+vm.createContext(context);
+const source = fs.readFileSync('app/backupstatus/js/admin.js', 'utf8');
+vm.runInContext(source.replace("    if (document.readyState === 'loading')", "    globalThis.render = renderHostStatus;\n    if (document.readyState === 'loading')"), context);
+for (let reload = 0; reload < 2; reload++) {
+    root.dataset = {};
+    context.render(root, {host_trusted: true, host_key: 'ssh-ed25519 fixture', host_fingerprint: 'SHA256:fixture'});
+    assert.equal(color, 'bm-status-green');
+    assert.equal(label.textContent, 'Ready');
+    assert.equal(elements['bm-ssh-verification-status'].textContent, 'Host verified.');
+    assert.equal(elements['bm-host-key'].value, 'ssh-ed25519 fixture');
+    assert.equal(elements['bm-host-fingerprint'].value, 'SHA256:fixture');
+}
+context.render(root, {host_trusted: false});
+assert.equal(color, 'bm-status-orange');
+assert.equal(elements['bm-ssh-verification-status'].textContent, 'Host verification has not been completed.');
+context.render(root, {host_trusted: false, host_error: 'SSH host verification failed'});
+assert.equal(color, 'bm-status-red');
+assert.equal(label.textContent, 'Failed');
+assert.equal(elements['bm-ssh-verification-status'].textContent, 'SSH host verification failed');
+assert.ok(fs.readFileSync('app/backupstatus/templates/admin.php', 'utf8').includes('id="bm-technical"'));
+console.log('Host status regression tests passed.');

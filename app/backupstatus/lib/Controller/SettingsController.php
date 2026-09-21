@@ -150,13 +150,23 @@ final class SettingsController extends Controller {
         $prefix = $recovery ? 'recovery' : 'provider';
         $id = $this->config->getAppValue('backupstatus', $prefix . '_request_id', '');
         if ($id === '') {
-            return $this->reply(['success' => true, 'status' => $this->config->getAppValue('backupstatus', $prefix . '_request_status', 'none')]);
+            $status = $this->config->getAppValue('backupstatus', $prefix . '_request_status', 'none');
+            // A pending status without a request ID cannot be polled and is stale.
+            if ($status === 'pending') {
+                $status = 'stale';
+                $this->config->setAppValue('backupstatus', $prefix . '_request_status', $status);
+            }
+            return $this->reply(['success' => true, 'status' => $status,
+                'clientId' => $this->config->getAppValue('backupstatus', 'provider_client_id', '')]);
         }
         $token = $this->config->getAppValue('backupstatus', $prefix . '_request_token', '');
         try {
             $result = $this->provider('get', '/api/v1/' . ($recovery ? 'recovery-requests/' : 'requests/') . rawurlencode($id), [], $token);
             $status = (string)$result['status'];
-            if ($status === 'approved' && !empty($result['connection'])) {
+            if ($status === 'approved' && empty($result['connection'])) {
+                return $this->reply(['success' => false, 'error' => 'Approved request has no connection configuration']);
+            }
+            if ($status === 'approved') {
                 if ($recovery) {
                     $activated = $this->runtime->helper('activate-recovery-key');
                     if (!($activated['success'] ?? false)) { return $this->reply($activated); }
@@ -171,7 +181,8 @@ final class SettingsController extends Controller {
             }
             $this->config->setAppValue('backupstatus', $prefix . '_request_status', $status);
             if ($status !== 'pending') { $this->config->deleteAppValue('backupstatus', $prefix . '_request_id'); }
-            return $this->reply(['success' => true, 'status' => $status]);
+            return $this->reply(['success' => true, 'status' => $status,
+                'clientId' => $this->config->getAppValue('backupstatus', 'provider_client_id', '')]);
         } catch (Throwable) { return $this->reply(['success' => false, 'error' => 'Provider status unavailable']); }
     }
 

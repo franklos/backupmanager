@@ -60,19 +60,23 @@ class SSH(Storage):
                 '-p', str(cfg['ssh_port']), '-o', 'BatchMode=yes',
                 '-o', 'IdentitiesOnly=yes', '-o', 'StrictHostKeyChecking=yes',
                 '-o', 'UserKnownHostsFile=' + cfg['known_hosts'],
+                '-o', 'GlobalKnownHostsFile=/dev/null', '-o', 'UpdateHostKeys=no',
                 '-o', 'ConnectTimeout=15']
 
     def remote(self, suffix):
         return self.cfg['ssh_user'] + '@' + self.cfg['ssh_host'] + ':' + self.cfg['ssh_path'].rstrip('/') + '/' + suffix
 
-    def rsync(self, args, read=False):
+    def rsync(self, args, read=False, timeout=3600):
         command = ['rsync', '--timeout=120', '-e', shlex.join(self.command(read))] + args
         # Network clients never run as root on the installed system.
         import os
         if os.geteuid() == 0:
             command = ['runuser', '-u', 'backupmgr', '--'] + command
-        result = self.run(command, capture_output=True, timeout=3600)
+        result = self.run(command, capture_output=True, timeout=timeout)
         if result.returncode:
+            import sys
+            diagnostic = result.stderr.decode('utf-8', errors='replace')
+            print('Backup Manager SSH failure: ' + ''.join(c for c in diagnostic if c.isprintable() or c == '\n')[:2000], file=sys.stderr)
             raise RuntimeError('SSH transfer failed; verify host trust, permissions and connectivity')
         return result.stdout.decode('utf-8', errors='strict')
 

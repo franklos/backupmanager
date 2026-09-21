@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / 'runtime'))
-from backupmanager import config, control, engine, phpconfig, provider_helpers, storage
+from backupmanager import client_helpers, config, control, engine, phpconfig, provider_helpers, storage
 
 
 class MemoryStorage(storage.Storage):
@@ -61,6 +61,13 @@ class FixtureEngine(engine.Engine):
     def command(self, args, **kwargs):
         self.commands.append(tuple(args))
         return b''
+
+
+class ControlCliTests(unittest.TestCase):
+    def test_payloadless_status_does_not_read_stdin(self):
+        cfg = config.validate({})
+        with patch.object(control, 'load', return_value=cfg), patch.object(control, 'dispatch', return_value={'status': {}}), patch.object(control, 'payload', side_effect=AssertionError('stdin was read')), patch.object(control.sys, 'argv', ['backupmanager-control', 'status']):
+            self.assertEqual(control.main(), 0)
 
 
 class ConfigTests(unittest.TestCase):
@@ -301,6 +308,13 @@ class S3Tests(unittest.TestCase):
 class ProviderKeyTests(unittest.TestCase):
     def public(self, byte):
         return 'ssh-ed25519 ' + base64.b64encode(struct.pack('>I', 11) + b'ssh-ed25519' + struct.pack('>I', 32) + bytes([byte]) * 32).decode()
+
+    def test_enrollment_accepts_newline_terminated_public_sidecar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            private = Path(tmp) / 'id_ed25519'
+            public = Path(str(private) + '.pub')
+            public.write_text(self.public(7) + '\n')
+            self.assertEqual(client_helpers.public_key(private), self.public(7))
 
     def test_wire_format_and_injected_options(self):
         self.assertEqual(provider_helpers.key(self.public(1)), self.public(1))
