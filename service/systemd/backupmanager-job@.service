@@ -1,0 +1,19 @@
+[Unit]
+Description=Backup Manager job %i
+After=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/local/sbin/backupmanager-worker %i
+ExecStopPost=/usr/local/sbin/backupmanager-finalize %i
+UMask=0077
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+PrivateDevices=true
+TimeoutStartSec=infinity
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

@@ -1,20 +1,8 @@
-#!/bin/bash
-set -euo pipefail
-
-DAYS="${1:-}"
-TIME="${2:-}"
-
-[[ "$DAYS" =~ ^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)(,(Mon|Tue|Wed|Thu|Fri|Sat|Sun))*$ ]] || { echo "Invalid days" >&2; exit 2; }
-[[ "$TIME" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || { echo "Invalid time" >&2; exit 2; }
-
-install -d -m 755 /etc/systemd/system/backupmanager.timer.d
-cat > /etc/systemd/system/backupmanager.timer.d/schedule.conf <<EOF
-[Timer]
-OnCalendar=
-OnCalendar=$DAYS *-*-* $TIME:00
-EOF
-
-systemctl daemon-reload
-systemctl enable --now backupmanager.timer
-systemctl restart backupmanager.timer
-systemctl show backupmanager.timer -p NextElapseUSecRealtime --value
+#!/usr/bin/python3 -I
+import sys
+sys.path.insert(0, '/usr/local/lib/backupmanager')
+from backupmanager.config import load
+from backupmanager.control import save
+if len(sys.argv) != 3:
+    raise SystemExit('Usage: backupmanager-schedule DAYS HH:MM')
+save(load(), {'days': sys.argv[1], 'time': sys.argv[2]})

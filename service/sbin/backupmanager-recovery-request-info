@@ -1,39 +1,5 @@
-#!/bin/bash
-set -euo pipefail
-
-CONFIG=/etc/backupmanager/backupmanager.conf
-KEY_DIR=/var/lib/backupmanager/recovery
-PRIVATE_KEY="$KEY_DIR/id_ed25519"
-PUBLIC_KEY="$PRIVATE_KEY.pub"
-
-[[ -r "$CONFIG" ]] || {
-    echo "Backup Manager config not readable" >&2
-    exit 2
-}
-
-# shellcheck disable=SC1090
-source "$CONFIG"
-
-[[ -n "${SOURCE_ID:-}" ]] || {
-    echo "SOURCE_ID missing" >&2
-    exit 3
-}
-
-install -d -o backupmgr -g backupmgr -m 0700 "$KEY_DIR"
-
-rm -f "$PRIVATE_KEY" "$PUBLIC_KEY"
-
-sudo -u backupmgr ssh-keygen \
-    -t ed25519 \
-    -f "$PRIVATE_KEY" \
-    -N '' \
-    -C "backupmanager-recovery" \
-    >/dev/null
-
-chmod 600 "$PRIVATE_KEY"
-chmod 644 "$PUBLIC_KEY"
-chown backupmgr:backupmgr "$PRIVATE_KEY" "$PUBLIC_KEY"
-
-PUBKEY="$(cat "$PUBLIC_KEY")"
-
-printf '%s\t%s\n' "$SOURCE_ID" "$PUBKEY"
+#!/usr/bin/python3 -I
+import sys
+sys.path.insert(0, '/usr/local/lib/backupmanager')
+from backupmanager.client_helpers import main
+raise SystemExit(main())

@@ -1,0 +1,8 @@
+#!/usr/bin/python3 -I
+import re
+import sys
+sys.path.insert(0, '/usr/local/lib/backupmanager')
+from backupmanager.control import worker
+if len(sys.argv) != 2 or not re.fullmatch('[a-f0-9]{32}', sys.argv[1]):
+    raise SystemExit('Invalid job ID')
+worker(sys.argv[1])

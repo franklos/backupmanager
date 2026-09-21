@@ -220,46 +220,12 @@ try {
         ], JSON_UNESCAPED_SLASHES),
     ]);
 
-    /*
-     * Nieuwe authorized_keys-regel bouwen voor dezelfde BM-client.
-     */
-    $keyParts = preg_split('/\s+/', trim((string)$request['public_key']));
-
-    if (!is_array($keyParts) || count($keyParts) < 2) {
-        throw new RuntimeException('Invalid SSH public key');
-    }
-
-    $publicKey = $keyParts[0] . ' ' . $keyParts[1];
-
-    $forcedCommand = '/usr/bin/rrsync -wo ' . escapeshellarg($storagePath);
-
-    $authorizedLine = sprintf(
-        'restrict,command="%s" %s bm-client=%s',
-        str_replace(['\\', '"'], ['\\\\', '\\"'], $forcedCommand),
-        $publicKey,
-        $clientId
-    );
-
-    $tmpFile = tempnam('/tmp', 'bm-auth-');
-
-    if (
-        $tmpFile === false
-        || file_put_contents($tmpFile, $authorizedLine . PHP_EOL, LOCK_EX) === false
-    ) {
-        throw new RuntimeException('Unable to prepare SSH authorization');
-    }
-
-    $installCommand = sprintf(
-        'sudo /usr/local/sbin/backupmanager-install-authorized-keys %s',
-        escapeshellarg($tmpFile)
-    );
-
-    exec($installCommand, $output, $exitCode);
-
-    if ($exitCode !== 0) {
-        @unlink($tmpFile);
-        throw new RuntimeException('SSH provisioning install failed');
-    }
+    $provisionedClient = $clientId;
+    \BackupManager\Provider\Provisioning::install($clientId, (string)$request['public_key'], (string)$request['restore_public_key']);
+    $credentials = $pdo->prepare('UPDATE clients SET api_token_hash = :token WHERE client_id = :client');
+    $credentials->execute(['token' => $request['request_token_hash'], 'client' => $clientId]);
+    $readKey = $pdo->prepare('UPDATE ssh_keys SET restore_public_key = :key WHERE client_id = :client AND status = "active"');
+    $readKey->execute(['key' => $request['restore_public_key'], 'client' => $clientId]);
 
     $pdo->commit();
 
@@ -272,6 +238,10 @@ try {
     echo "Fingerprint: {$request['ssh_fingerprint']}\n";
 
 } catch (Throwable $e) {
+    if (isset($provisionedClient)) {
+        exec('sudo -n /usr/local/sbin/backupmanager-remove-authorized-key ' . escapeshellarg($provisionedClient), $cleanupOutput, $cleanupCode);
+        // Never retain a newly issued key after a failed approval transaction.
+    }
     if (isset($pdo) && $pdo instanceof PDO && $pdo->inTransaction()) {
         $pdo->rollBack();
     }

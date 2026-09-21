@@ -18,7 +18,11 @@ return [
         'root' => '/var/lib/backupmanager-provider',
     ],
 
+    'admin' => [
+        'password_hash_file' => '/etc/backupmanager-provider/admin-password.hash',
+    ],
     'api' => [
+        'management_token_file' => '/etc/backupmanager-provider/management-token',
         'request_expiry_hours' => 24,
     ],
 ];

@@ -1,35 +1,5 @@
-#!/bin/sh
-set -eu
-
-RECOVERY_DIR=/var/lib/backupmanager/recovery
-SSH_DIR=/var/lib/backupmanager/.ssh
-
-SRC="$RECOVERY_DIR/id_ed25519"
-SRC_PUB="$SRC.pub"
-
-DST="$SSH_DIR/id_ed25519"
-DST_PUB="$DST.pub"
-
-[ -f "$SRC" ] && [ -f "$SRC_PUB" ] || {
-    echo "Recovery key not found" >&2
-    exit 1
-}
-
-install -d -o backupmgr -g backupmgr -m 0700 "$SSH_DIR"
-
-TMP="$SSH_DIR/.id_ed25519.recovery.$$"
-TMP_PUB="$TMP.pub"
-
-cp "$SRC" "$TMP"
-cp "$SRC_PUB" "$TMP_PUB"
-
-chown backupmgr:backupmgr "$TMP" "$TMP_PUB"
-chmod 0600 "$TMP"
-chmod 0644 "$TMP_PUB"
-
-mv "$TMP" "$DST"
-mv "$TMP_PUB" "$DST_PUB"
-
-rm -f "$SRC" "$SRC_PUB"
-
-echo "Recovery key activated"
+#!/usr/bin/python3 -I
+import sys
+sys.path.insert(0, '/usr/local/lib/backupmanager')
+from backupmanager.client_helpers import main
+raise SystemExit(main())

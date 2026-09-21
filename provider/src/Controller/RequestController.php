@@ -21,7 +21,10 @@ final class RequestController
     public function create(): never
     {
         try {
-            $raw = file_get_contents('php://input');
+            $raw = file_get_contents('php://input', false, null, 0, 16385);
+            if ($raw === false || strlen($raw) > 16384) {
+                Response::json(['success' => false, 'error' => 'Request too large'], 413);
+            }
             $input = json_decode($raw ?: '', true);
 
             if (!is_array($input)) {
@@ -38,7 +41,7 @@ final class RequestController
             $nextcloudVersion = trim((string)($input['nextcloud_version'] ?? ''));
             $requesterEmail = trim((string)($input['requester_email'] ?? ''));
 
-            if ($sourceId === '') {
+            if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$/D', $sourceId)) {
                 Response::json([
                     'success' => false,
                     'error' => 'source_id is required',
@@ -76,6 +79,10 @@ final class RequestController
                 ], 400);
             }
 
+            $restoreKey = trim((string)($input['restore_public_key'] ?? ''));
+            if ($this->fingerprint($restoreKey) === null || $this->fingerprint($restoreKey) === $this->fingerprint($publicKey)) {
+                Response::json(['success' => false, 'error' => 'A distinct valid restore_public_key is required'], 400);
+            }
             $fingerprint = $this->fingerprint($publicKey);
 
             if ($fingerprint === null) {
@@ -89,8 +96,8 @@ final class RequestController
             $requestToken = bin2hex(random_bytes(32));
             $requestTokenHash = hash('sha256', $requestToken);
 
-            $approvalToken = bin2hex(random_bytes(32));
-            $approvalTokenHash = hash('sha256', $approvalToken);
+            // Enrollment never grants approval authority. Only authenticated administrators approve.
+            $approvalTokenHash = null;
 
             $expiryHours = max(
                 1,
@@ -102,11 +109,12 @@ final class RequestController
                 time() + ($expiryHours * 3600)
             );
 
-            $approvalTokenExpiresAt = $expiresAt;
+            $approvalTokenExpiresAt = null;
 
             $remoteIp = $_SERVER['REMOTE_ADDR'] ?? null;
 
             $pdo = $this->database->pdo();
+            $pdo->exec('UPDATE provider_requests SET status = "expired" WHERE status = "pending" AND expires_at < UTC_TIMESTAMP()');
             $pdo->beginTransaction();
 
             $statement = $pdo->prepare(
@@ -120,6 +128,7 @@ final class RequestController
                     source_url,
                     requester_email,
                     public_key,
+                    restore_public_key,
                     ssh_fingerprint,
                     expires_at,
                     requester_ip,
@@ -135,6 +144,7 @@ final class RequestController
                     :source_url,
                     :requester_email,
                     :public_key,
+                    :restore_public_key,
                     :ssh_fingerprint,
                     :expires_at,
                     :requester_ip,
@@ -152,6 +162,7 @@ final class RequestController
                 'source_url' => $sourceUrl,
                 'requester_email' => $requesterEmail,
                 'public_key' => $publicKey,
+                'restore_public_key' => $restoreKey,
                 'ssh_fingerprint' => $fingerprint,
                 'expires_at' => $expiresAt,
                 'requester_ip' => $remoteIp,
@@ -197,17 +208,19 @@ final class RequestController
                 'success' => true,
                 'request_id' => $requestId,
                 'request_token' => $requestToken,
-                'approval_token' => $approvalToken,
                 'status' => 'pending',
                 'expires_at' => $expiresAt,
             ], 201);
         } catch (Throwable $e) {
-            error_log('Backup Manager provider create error: ' . $e->getMessage());
+            error_log('Backup Manager provider enrollment failed');
 
             if (isset($pdo) && $pdo instanceof PDO && $pdo->inTransaction()) {
                 $pdo->rollBack();
             }
 
+            if ($e instanceof \PDOException && (string)$e->getCode() === '23000') {
+                Response::json(['success' => false, 'error' => 'A conflicting or pending request already exists'], 409);
+            }
             Response::json([
                 'success' => false,
                 'error' => 'Internal server error',
@@ -280,16 +293,6 @@ final class RequestController
             && !empty($request['expires_at'])
             && strtotime((string)$request['expires_at']) < time()
         ) {
-            $update = $this->database->pdo()->prepare(
-                'UPDATE provider_requests
-                 SET status = "expired"
-                 WHERE request_id = :request_id
-                   AND status = "pending"'
-            );
-
-            $update->execute([
-                'request_id' => $requestId,
-            ]);
 
             $request['status'] = 'expired';
         }
@@ -369,18 +372,8 @@ final class RequestController
         $pdo = $this->database->pdo();
 
         $client = $pdo->prepare(
-            'SELECT
-                c.client_id,
-                c.source_id,
-                pr.request_token_hash
-             FROM clients c
-             JOIN provider_requests pr
-               ON pr.source_id = c.source_id
-              AND pr.status = "approved"
-             WHERE c.client_id = :client_id
-               AND c.status = "active"
-             ORDER BY pr.id DESC
-             LIMIT 1'
+            'SELECT client_id, source_id, api_token_hash AS request_token_hash
+             FROM clients WHERE client_id = :client_id AND status IN ("active", "suspended") LIMIT 1'
         );
 
         $client->execute([
@@ -602,6 +595,7 @@ final class RequestController
                 'SELECT
                     c.status,
                     sk.public_key,
+                    sk.restore_public_key,
                     sa.storage_path
                  FROM clients c
                  LEFT JOIN ssh_keys sk
@@ -679,42 +673,8 @@ final class RequestController
                 throw new \RuntimeException('Client SSH configuration unavailable');
             }
 
-            $keyParts = preg_split('/\s+/', $publicKey);
-
-            if (!is_array($keyParts) || count($keyParts) < 2) {
-                throw new \RuntimeException('Invalid SSH public key');
-            }
-
-            $publicKey = $keyParts[0] . ' ' . $keyParts[1];
-            $forcedCommand = '/usr/bin/rrsync -wo ' . escapeshellarg($storagePath);
-
-            $authorizedLine = sprintf(
-                'restrict,command="%s" %s bm-client=%s',
-                str_replace(['\\', '"'], ['\\\\', '\\"'], $forcedCommand),
-                $publicKey,
-                $clientId
-            );
-
-            $tmpFile = tempnam('/tmp', 'bm-auth-');
-
-            if (
-                $tmpFile === false
-                || file_put_contents($tmpFile, $authorizedLine . PHP_EOL, LOCK_EX) === false
-            ) {
-                throw new \RuntimeException('Unable to prepare SSH authorization');
-            }
-
-            $command = sprintf(
-                'sudo -n /usr/local/sbin/backupmanager-install-authorized-keys %s',
-                escapeshellarg($tmpFile)
-            );
-
-            exec($command, $output, $exitCode);
-
-            if ($exitCode !== 0) {
-                @unlink($tmpFile);
-                throw new \RuntimeException('Unable to restore SSH access');
-            }
+            $resumeProvisioned = true;
+            \BackupManager\Provider\Provisioning::install($clientId, $publicKey, (string)$clientData['restore_public_key']);
 
             $updateClient = $pdo->prepare(
                 'UPDATE clients SET status = "active" WHERE client_id = :client_id'
@@ -737,6 +697,9 @@ final class RequestController
                 'status' => 'active',
             ]);
         } catch (\Throwable $e) {
+            if (isset($resumeProvisioned)) {
+                exec('sudo -n /usr/local/sbin/backupmanager-remove-authorized-key ' . escapeshellarg($clientId), $revokeOutput, $revokeCode);
+            }
             if ($pdo->inTransaction()) {
                 $pdo->rollBack();
             }
@@ -970,9 +933,9 @@ final class RequestController
 
             $event = $pdo->prepare(
                 'INSERT INTO provider_events
-                    (client_id, event_type, severity, details)
+                    (actor_type, actor_id, client_id, event_type, severity, details)
                  VALUES
-                    (:client_id, "client.deleted", "warning", :details)'
+                    ("administrator", "management", :client_id, "client.deleted", "warning", :details)'
             );
 
             $event->execute([
@@ -1031,17 +994,8 @@ final class RequestController
         $pdo = $this->database->pdo();
 
         $client = $pdo->prepare(
-            'SELECT
-                c.client_id,
-                pr.request_token_hash
-             FROM clients c
-             JOIN provider_requests pr
-               ON pr.source_id = c.source_id
-              AND pr.status = "approved"
-             WHERE c.client_id = :client_id
-               AND c.status = "active"
-             ORDER BY pr.id DESC
-             LIMIT 1'
+            'SELECT client_id, status, api_token_hash AS request_token_hash
+             FROM clients WHERE client_id = :client_id AND status IN ("active", "suspended") LIMIT 1'
         );
 
         $client->execute([
@@ -1118,7 +1072,7 @@ final class RequestController
 
         Response::json([
             'success' => true,
-            'status' => 'connected',
+            'status' => $clientData['status'] === 'active' ? 'connected' : 'suspended',
             'capacity_bytes' => $storage['capacity_bytes'],
             'used_bytes' => $storage['used_bytes'],
             'free_bytes' => $storage['free_bytes'],
@@ -1128,28 +1082,24 @@ final class RequestController
 
     private function fingerprint(string $publicKey): ?string
     {
-        $parts = preg_split('/\s+/', trim($publicKey));
-
-        if (!is_array($parts) || count($parts) < 2) {
+        if (preg_match('/^ssh-ed25519 ([A-Za-z0-9+\/=]+)(?: [^\r\n]*)?$/D', $publicKey, $m) !== 1) {
             return null;
         }
-
-        $decoded = base64_decode($parts[1], true);
-
-        if ($decoded === false) {
+        $decoded = base64_decode($m[1], true);
+        if ($decoded === false || strlen($decoded) !== 51
+            || substr($decoded, 0, 19) !== pack('N', 11) . 'ssh-ed25519' . pack('N', 32)) {
             return null;
         }
-
-        return 'SHA256:' . rtrim(
-            base64_encode(hash('sha256', $decoded, true)),
-            '='
-        );
+        return 'SHA256:' . rtrim(base64_encode(hash('sha256', $decoded, true)), '=');
     }
 
     public function createRecovery(): never
     {
         try {
-            $raw = file_get_contents('php://input');
+            $raw = file_get_contents('php://input', false, null, 0, 16385);
+            if ($raw === false || strlen($raw) > 16384) {
+                Response::json(['success' => false, 'error' => 'Request too large'], 413);
+            }
             $input = json_decode($raw ?: '', true);
 
             if (!is_array($input)) {
@@ -1170,7 +1120,7 @@ final class RequestController
                 ], 400);
             }
 
-            if ($sourceId === '') {
+            if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$/D', $sourceId)) {
                 Response::json([
                     'success' => false,
                     'error' => 'source_id is required',
@@ -1188,6 +1138,10 @@ final class RequestController
                 ], 400);
             }
 
+            $restoreKey = trim((string)($input['restore_public_key'] ?? ''));
+            if ($this->fingerprint($restoreKey) === null || $this->fingerprint($restoreKey) === $this->fingerprint($publicKey)) {
+                Response::json(['success' => false, 'error' => 'A distinct valid restore_public_key is required'], 400);
+            }
             $fingerprint = $this->fingerprint($publicKey);
 
             if ($fingerprint === null) {
@@ -1219,6 +1173,7 @@ final class RequestController
                 ], 404);
             }
 
+            $pdo->exec('UPDATE recovery_requests SET status = "expired" WHERE status = "pending" AND expires_at < UTC_TIMESTAMP()');
             $existing = $pdo->prepare(
                 'SELECT recovery_request_id
                  FROM recovery_requests
@@ -1265,6 +1220,7 @@ final class RequestController
                     client_id,
                     source_id,
                     public_key,
+                    restore_public_key,
                     ssh_fingerprint,
                     status,
                     expires_at,
@@ -1275,6 +1231,7 @@ final class RequestController
                     :client_id,
                     :source_id,
                     :public_key,
+                    :restore_public_key,
                     :ssh_fingerprint,
                     "pending",
                     :expires_at,
@@ -1288,6 +1245,7 @@ final class RequestController
                 'client_id' => $clientId,
                 'source_id' => $sourceId,
                 'public_key' => $publicKey,
+                'restore_public_key' => $restoreKey,
                 'ssh_fingerprint' => $fingerprint,
                 'expires_at' => $expiresAt,
                 'requester_ip' => $_SERVER['REMOTE_ADDR'] ?? null,
@@ -1338,6 +1296,9 @@ final class RequestController
                 $pdo->rollBack();
             }
 
+            if ($e instanceof \PDOException && (string)$e->getCode() === '23000') {
+                Response::json(['success' => false, 'error' => 'A conflicting or pending request already exists'], 409);
+            }
             Response::json([
                 'success' => false,
                 'error' => 'Internal server error',
@@ -1402,16 +1363,6 @@ final class RequestController
             && !empty($request['expires_at'])
             && strtotime((string)$request['expires_at']) < time()
         ) {
-            $update = $this->database->pdo()->prepare(
-                'UPDATE recovery_requests
-                 SET status = "expired"
-                 WHERE recovery_request_id = :request_id
-                   AND status = "pending"'
-            );
-
-            $update->execute([
-                'request_id' => $requestId,
-            ]);
 
             $request['status'] = 'expired';
         }
@@ -1466,253 +1417,5 @@ final class RequestController
     }
 
 
-
-    public function approvalAction(string $requestId, string $action): void
-    {
-        if (
-            preg_match('/^REQ-[0-9]{8}-[A-F0-9]{6}$/', $requestId) !== 1
-            || !in_array($action, ['approve', 'reject'], true)
-        ) {
-            Response::json([
-                'success' => false,
-                'error' => 'Invalid approval request',
-            ], 400);
-        }
-
-        $token = trim((string)($_GET['token'] ?? ''));
-
-        if ($token === '') {
-            Response::json([
-                'success' => false,
-                'error' => 'Missing approval token',
-            ], 400);
-        }
-
-        $pdo = $this->database->pdo();
-
-        $statement = $pdo->prepare(
-            'SELECT
-                request_id,
-                status,
-                approval_token_hash,
-                approval_token_expires_at,
-                approval_token_used_at
-             FROM provider_requests
-             WHERE request_id = :request_id
-             LIMIT 1'
-        );
-
-        $statement->execute([
-            'request_id' => $requestId,
-        ]);
-
-        $request = $statement->fetch(PDO::FETCH_ASSOC);
-
-        if (!is_array($request)) {
-            Response::json([
-                'success' => false,
-                'error' => 'Approval request not found',
-            ], 404);
-        }
-
-        if ((string)$request['status'] !== 'pending') {
-            Response::json([
-                'success' => false,
-                'error' => 'Request is no longer pending',
-            ], 409);
-        }
-
-        if (!empty($request['approval_token_used_at'])) {
-            Response::json([
-                'success' => false,
-                'error' => 'Approval token has already been used',
-            ], 410);
-        }
-
-        if (
-            empty($request['approval_token_expires_at'])
-            || strtotime((string)$request['approval_token_expires_at']) < time()
-        ) {
-            Response::json([
-                'success' => false,
-                'error' => 'Approval token has expired',
-            ], 410);
-        }
-
-        $tokenHash = hash('sha256', $token);
-
-        if (
-            empty($request['approval_token_hash'])
-            || !hash_equals((string)$request['approval_token_hash'], $tokenHash)
-        ) {
-            Response::json([
-                'success' => false,
-                'error' => 'Invalid approval token',
-            ], 403);
-        }
-
-        $claim = $pdo->prepare(
-            'UPDATE provider_requests
-             SET approval_token_used_at = UTC_TIMESTAMP()
-             WHERE request_id = :request_id
-               AND status = "pending"
-               AND approval_token_used_at IS NULL
-               AND approval_token_expires_at >= UTC_TIMESTAMP()
-               AND approval_token_hash = :approval_token_hash'
-        );
-
-        $claim->execute([
-            'request_id' => $requestId,
-            'approval_token_hash' => $tokenHash,
-        ]);
-
-        if ($claim->rowCount() !== 1) {
-            Response::json([
-                'success' => false,
-                'error' => 'Approval token is no longer valid',
-            ], 409);
-        }
-
-        $script = $action === 'approve'
-            ? dirname(__DIR__, 2) . '/bin/approve.php'
-            : dirname(__DIR__, 2) . '/bin/reject-request.php';
-
-        $process = proc_open(
-            ['/usr/bin/php', $script, $requestId, 'email-approval'],
-            [
-                1 => ['pipe', 'w'],
-                2 => ['pipe', 'w'],
-            ],
-            $pipes
-        );
-
-        if (!is_resource($process)) {
-            $cleanup = $pdo->prepare(
-                'UPDATE provider_requests
-                 SET status = "rejected",
-                     rejected_at = UTC_TIMESTAMP(),
-                     notes = CONCAT_WS("\n", NULLIF(notes, ""), "Email approval action could not be started")
-                 WHERE request_id = :request_id
-                   AND status = "pending"'
-            );
-
-            $cleanup->execute([
-                'request_id' => $requestId,
-            ]);
-
-            $event = $pdo->prepare(
-                'INSERT INTO provider_events (
-                    actor_type,
-                    actor_id,
-                    request_id,
-                    event_type,
-                    severity,
-                    details,
-                    remote_ip
-                ) VALUES (
-                    "system",
-                    "email-approval",
-                    :request_id,
-                    "request.approval_failed",
-                    "error",
-                    :details,
-                    :remote_ip
-                )'
-            );
-
-            $event->execute([
-                'request_id' => $requestId,
-                'details' => json_encode([
-                    'request_id' => $requestId,
-                    'action' => $action,
-                    'reason' => 'approval_action_start_failed',
-                ], JSON_UNESCAPED_SLASHES),
-                'remote_ip' => $_SERVER['REMOTE_ADDR'] ?? null,
-            ]);
-
-            $delete = $pdo->prepare(
-                'DELETE FROM provider_requests WHERE request_id = :request_id'
-            );
-            $delete->execute(['request_id' => $requestId]);
-
-            Response::json([
-                'success' => false,
-                'error' => 'Unable to start provider action',
-            ], 500);
-        }
-
-        $stdout = trim((string)stream_get_contents($pipes[1]));
-        $stderr = trim((string)stream_get_contents($pipes[2]));
-
-        fclose($pipes[1]);
-        fclose($pipes[2]);
-
-        $exitCode = proc_close($process);
-
-        if ($exitCode !== 0) {
-            $cleanup = $pdo->prepare(
-                'UPDATE provider_requests
-                 SET status = "rejected",
-                     rejected_at = UTC_TIMESTAMP(),
-                     notes = CONCAT_WS("\n", NULLIF(notes, ""), "Email approval action failed")
-                 WHERE request_id = :request_id
-                   AND status = "pending"'
-            );
-
-            $cleanup->execute([
-                'request_id' => $requestId,
-            ]);
-
-            $event = $pdo->prepare(
-                'INSERT INTO provider_events (
-                    actor_type,
-                    actor_id,
-                    request_id,
-                    event_type,
-                    severity,
-                    details,
-                    remote_ip
-                ) VALUES (
-                    "system",
-                    "email-approval",
-                    :request_id,
-                    "request.approval_failed",
-                    "error",
-                    :details,
-                    :remote_ip
-                )'
-            );
-
-            $event->execute([
-                'request_id' => $requestId,
-                'details' => json_encode([
-                    'request_id' => $requestId,
-                    'action' => $action,
-                    'reason' => 'approval_action_failed',
-                ], JSON_UNESCAPED_SLASHES),
-                'remote_ip' => $_SERVER['REMOTE_ADDR'] ?? null,
-            ]);
-
-            $delete = $pdo->prepare(
-                'DELETE FROM provider_requests WHERE request_id = :request_id'
-            );
-            $delete->execute(['request_id' => $requestId]);
-
-            error_log(
-                'Backup Manager approval action failed for '
-                . $requestId
-                . ': '
-                . ($stderr !== '' ? $stderr : 'unknown error')
-            );
-
-            Response::json([
-                'success' => false,
-                'error' => 'Provider action failed',
-            ], 500);
-        }
-
-        http_response_code(204);
-        exit;
-    }
 
 }

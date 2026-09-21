@@ -21,6 +21,6 @@ systemd-run \
     --collect \
     --unit="backupmanager-uninstall-$(date +%s)" \
     --on-active=3s \
-    /usr/local/sbin/backupmanager-uninstall-now $ARG
+    /usr/local/sbin/backupmanager-uninstall-now --apply $ARG
 
 echo "scheduled"

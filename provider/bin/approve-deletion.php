@@ -54,7 +54,7 @@ try {
            ON c.client_id = dr.client_id
          LEFT JOIN storage_allocations s
            ON s.client_id = dr.client_id
-          AND s.status = "active"
+          AND s.status IN ("active", "suspended")
           AND s.destination_type = "ssh"
          WHERE dr.deletion_request_id = :request_id
          FOR UPDATE'
@@ -70,64 +70,19 @@ try {
         throw new RuntimeException('Deletion request not found');
     }
 
-    if ($row['status'] !== 'pending') {
+    if (!in_array($row['status'], ['pending', 'approved', 'failed'], true)) {
         throw new RuntimeException(
             'Deletion request is not pending; current status: ' . $row['status']
         );
     }
 
     $clientId = (string)$row['client_id'];
-    $storageRoot = realpath(
-        (string)$config->get('storage', 'root', '/var/lib/backupmanager-provider')
-    );
-
-    $storagePath = null;
-
-    if (!empty($row['storage_path'])) {
-        $storagePath = realpath((string)$row['storage_path']);
-    }
-
-    if ((int)$row['delete_storage'] === 1) {
-        if ($storageRoot === false || $storagePath === false || $storagePath === null) {
-            throw new RuntimeException('Storage path could not be resolved');
-        }
-
-        if ($storagePath !== $storageRoot . '/' . $clientId) {
-            throw new RuntimeException('Unsafe storage path');
-        }
-
-        $realRootPrefix = rtrim($storageRoot, '/') . '/';
-
-        if (!str_starts_with($storagePath . '/', $realRootPrefix)) {
-            throw new RuntimeException('Storage path escapes provider root');
-        }
-
-        $iterator = new RecursiveIteratorIterator(
-            new RecursiveDirectoryIterator(
-                $storagePath,
-                FilesystemIterator::SKIP_DOTS
-            ),
-            RecursiveIteratorIterator::CHILD_FIRST
-        );
-
-        foreach ($iterator as $item) {
-            $path = $item->getPathname();
-
-            if ($item->isDir()) {
-                if (!rmdir($path)) {
-                    throw new RuntimeException('Unable to remove directory: ' . $path);
-                }
-            } else {
-                if (!unlink($path)) {
-                    throw new RuntimeException('Unable to remove file: ' . $path);
-                }
-            }
-        }
-
-        if (!rmdir($storagePath)) {
-            throw new RuntimeException('Unable to remove client storage directory');
-        }
-    }
+    // Commit a suspended identity before nontransactional key/storage changes.
+    $suspend = $pdo->prepare('UPDATE clients SET status = "suspended" WHERE client_id = :client');
+    $suspend->execute(['client' => $clientId]);
+    $intent = $pdo->prepare('UPDATE deletion_requests SET status = "approved", approved_at = UTC_TIMESTAMP(), approved_by = :actor WHERE deletion_request_id = :request');
+    $intent->execute(['actor' => $approvedBy, 'request' => $requestId]);
+    $pdo->commit();
 
     $removeAuthorizedKey = sprintf(
         'sudo /usr/local/sbin/backupmanager-remove-authorized-key %s',
@@ -139,6 +94,15 @@ try {
     if ($exitCode !== 0) {
         throw new RuntimeException('Unable to remove authorized SSH key');
     }
+
+    if ((int)$row['delete_storage'] === 1) {
+        $command = 'sudo -n /usr/local/sbin/backupmanager-remove-storage ' . escapeshellarg($clientId);
+        exec($command, $deleteOutput, $deleteCode);
+        if ($deleteCode !== 0) {
+            throw new RuntimeException('Storage deletion failed; access remains suspended');
+        }
+    }
+    $pdo->beginTransaction();
 
     $revokeKey = $pdo->prepare(
         'UPDATE ssh_keys
@@ -156,7 +120,7 @@ try {
         'UPDATE storage_allocations
          SET status = "removed"
          WHERE client_id = :client_id
-           AND status = "active"'
+           AND status IN ("active", "suspended")'
     );
 
     $removeStorage->execute([
@@ -228,5 +192,11 @@ try {
         $pdo->rollBack();
     }
 
-    fail($e->getMessage());
+    if (isset($clientId, $pdo)) {
+        try {
+            $failed = $pdo->prepare('UPDATE deletion_requests SET status = "failed", error_message = "Operation failed; retry after reviewing storage and helper availability" WHERE deletion_request_id = :request AND status = "approved"');
+            $failed->execute(['request' => $requestId]);
+        } catch (Throwable) { /* Suspended identity and durable intent remain for operator recovery. */ }
+    }
+    fail('Deletion did not complete; access remains suspended. Review and retry the request.');
 }

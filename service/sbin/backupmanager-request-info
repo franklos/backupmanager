@@ -1,36 +1,5 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-CONFIG=/etc/backupmanager/backupmanager.conf
-[ -r "$CONFIG" ] || exit 2
-
-source "$CONFIG"
-
-PUBKEY="${SSH_KEY}.pub"
-[ -r "$PUBKEY" ] || exit 3
-
-SOURCE="${SOURCE_ID:-}"
-
-if [[ -z "$SOURCE" || "$SOURCE" == "example.nextcloud.local" ]]; then
-    HOST="$(hostname -f 2>/dev/null || hostname)"
-
-    INSTANCE_ID=""
-
-    if [[ -n "${NC_PATH:-}" && -f "${NC_PATH}/occ" ]]; then
-        INSTANCE_ID="$(
-            runuser -u www-data -- php "${NC_PATH}/occ" \
-                config:system:get instanceid 2>/dev/null || true
-        )"
-    fi
-
-    if [[ -n "$INSTANCE_ID" ]]; then
-        SOURCE="${HOST}-${INSTANCE_ID}"
-    else
-        SOURCE="$HOST"
-    fi
-fi
-
-printf "%s\t%s\t%s\n" \
-    "$SOURCE" \
-    "${BACKUP_HOST:-}" \
-    "$(cat "$PUBKEY")"
+#!/usr/bin/python3 -I
+import sys
+sys.path.insert(0, '/usr/local/lib/backupmanager')
+from backupmanager.client_helpers import main
+raise SystemExit(main())

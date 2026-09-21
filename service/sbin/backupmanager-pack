@@ -1,0 +1,8 @@
+#!/usr/bin/python3 -I
+import os
+import sys
+sys.path.insert(0, '/usr/local/lib/backupmanager')
+from backupmanager.archive import pack_data
+if len(sys.argv) != 2 or os.geteuid() == 0:
+    raise SystemExit('Invoke as the Nextcloud service user with a data directory')
+pack_data(sys.argv[1], sys.stdout.buffer)

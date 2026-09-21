@@ -1,8 +1,8 @@
 [Unit]
-Description=Run Backup Manager on configured days and time
+Description=Scheduled Backup Manager recovery points
 
 [Timer]
-OnCalendar=Mon,Tue,Wed,Thu,Fri,Sat,Sun *-*-* 02:00:00
+OnCalendar=Mon,Tue,Wed,Thu,Fri,Sat,Sun *-*-* 02:00:00 UTC
 Persistent=true
 Unit=backupmanager.service
 

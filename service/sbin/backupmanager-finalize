@@ -1,0 +1,8 @@
+#!/usr/bin/python3 -I
+import os
+import sys
+sys.path.insert(0, '/usr/local/lib/backupmanager')
+from backupmanager.finalize import finalize
+if len(sys.argv) != 2:
+    raise SystemExit('Invalid arguments')
+finalize(sys.argv[1], os.environ.get('SERVICE_RESULT', 'unknown'))

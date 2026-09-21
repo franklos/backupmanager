@@ -1,140 +1,16 @@
-#!/bin/bash
-set -euo pipefail
-
-BACKUP_FILE="${1:-}"
-
-case "$BACKUP_FILE" in
-    nextcloud-db-*.sql.gz) ;;
-    *)
-        echo "Usage: backupmanager-restore-complete nextcloud-db-YYYY-MM-DD_HH-MM.sql.gz" >&2
-        exit 2
-        ;;
-esac
-
-CONFIG=/etc/backupmanager/backupmanager.conf
-
-[[ -r "$CONFIG" ]] || {
-    echo "Backup Manager config not readable" >&2
-    exit 2
-}
-
-# shellcheck disable=SC1090
-source "$CONFIG"
-
-RESTORE_KEY="${SSH_KEY}_restore"
-
-[[ -r "$RESTORE_KEY" ]] || {
-    echo "Restore key not available" >&2
-    exit 3
-}
-
-NC_CONFIG="${NC_PATH%/}/config/config.php"
-
-[[ -r "$NC_CONFIG" ]] || {
-    echo "Nextcloud config not readable: $NC_CONFIG" >&2
-    exit 4
-}
-
-case "$DATA_PATH" in
-    /var/www/nextcloud/data|/var/www/nextcloud/data/)
-        ;;
-    *)
-        echo "Unsafe DATA_PATH refused: $DATA_PATH" >&2
-        exit 5
-        ;;
-esac
-
-mapfile -t NC_DB_CONFIG < <(
-    php -r '
-        include $argv[1];
-        foreach (["dbhost", "dbname", "dbuser", "dbpassword"] as $key) {
-            echo (string)($CONFIG[$key] ?? ""), PHP_EOL;
-        }
-    ' "$NC_CONFIG"
-)
-
-DB_HOST="${NC_DB_CONFIG[0]:-localhost}"
-DB_NAME="${NC_DB_CONFIG[1]:-}"
-DB_USER="${NC_DB_CONFIG[2]:-}"
-DB_PASSWORD="${NC_DB_CONFIG[3]:-}"
-
-[[ -n "$DB_NAME" && -n "$DB_USER" ]] || {
-    echo "Incomplete database configuration" >&2
-    exit 6
-}
-
-RESTORE_DIR=/var/lib/backupmanager/restore
-mkdir -p "$RESTORE_DIR"
-
-LOCAL_FILE="$RESTORE_DIR/$BACKUP_FILE"
-
-SSH_OPTS="-i $RESTORE_KEY -p $BACKUP_PORT -o BatchMode=yes -o UserKnownHostsFile=$(dirname "$RESTORE_KEY")/known_hosts -o ConnectTimeout=10"
-
-echo "=== Complete Nextcloud restore ==="
-echo "Database : $BACKUP_FILE"
-echo "Data     : ${BACKUP_USER}@${BACKUP_HOST}:${BACKUP_PATH%/}/data/"
-echo
-
-echo "Downloading database backup"
-
-rsync \
-    -rt \
-    --no-owner \
-    --no-group \
-    --no-perms \
-    -e "ssh $SSH_OPTS" \
-    "${BACKUP_USER}@${BACKUP_HOST}:${BACKUP_PATH%/}/database/$BACKUP_FILE" \
-    "$LOCAL_FILE"
-
-echo "Checking database backup"
-gzip -t "$LOCAL_FILE"
-
-MAINTENANCE_ON=0
-
-cleanup() {
-    if [[ "$MAINTENANCE_ON" -eq 1 ]]; then
-        echo "Disabling maintenance mode"
-        sudo -u "$NC_USER" php "${NC_PATH%/}/occ" maintenance:mode --off || true
-    fi
-}
-
-trap cleanup EXIT
-
-echo "Enabling maintenance mode"
-sudo -u "$NC_USER" php "${NC_PATH%/}/occ" maintenance:mode --on
-MAINTENANCE_ON=1
-
-echo "Restoring database"
-
-gzip -dc "$LOCAL_FILE" | \
-    MYSQL_PWD="$DB_PASSWORD" mysql \
-        -h "$DB_HOST" \
-        -P "${DB_PORT:-3306}" \
-        -u "$DB_USER" \
-        "$DB_NAME"
-
-echo "Database restored"
-
-echo "Restoring data"
-
-rsync \
-    -rltH \
-    --no-owner \
-    --no-group \
-    --no-perms \
-    --delete \
-    -e "ssh $SSH_OPTS" \
-    "${BACKUP_USER}@${BACKUP_HOST}:${BACKUP_PATH%/}/data/" \
-    "${DATA_PATH%/}/"
-
-echo "Correcting data ownership"
-chown -R "$NC_USER:$NC_USER" "${DATA_PATH%/}"
-
-echo "Disabling maintenance mode"
-sudo -u "$NC_USER" php "${NC_PATH%/}/occ" maintenance:mode --off
-MAINTENANCE_ON=0
-
-trap - EXIT
-
-echo
-echo "Complete restore completed successfully"
+#!/usr/bin/python3 -I
+import sys
+sys.path.insert(0, '/usr/local/lib/backupmanager')
+from backupmanager.config import load
+from backupmanager.engine import Engine
+from backupmanager.storage import GENERATION
+from pathlib import Path
+name = Path(sys.argv[0]).name
+args = sys.argv[1:]
+verify = bool(args and args[0] in ('verify', 'dry-run'))
+if args and args[0] in ('verify', 'restore', 'dry-run'):
+    args.pop(0)
+if len(args) != 1 or not GENERATION.fullmatch(args[0]):
+    raise SystemExit('Supply a recovery point ID. Legacy mirror backups are preserved; see docs/operations.md.')
+kind = {'backupmanager-restore-data': 'data', 'backupmanager-restore-database': 'database', 'backupmanager-restore-complete': 'complete', 'backupmanager-disaster-recovery': 'disaster'}[name]
+Engine(load()).restore(args[0], kind, verify)

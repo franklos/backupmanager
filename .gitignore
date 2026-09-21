@@ -29,3 +29,8 @@ provider/.env
 *.swp
 *~
 !provider/sql/*.sql
+
+# Generated development artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/

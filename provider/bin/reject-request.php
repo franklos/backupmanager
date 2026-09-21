@@ -111,11 +111,6 @@ try {
         ], JSON_UNESCAPED_SLASHES),
     ]);
 
-    $delete = $pdo->prepare(
-        'DELETE FROM provider_requests WHERE request_id = :request_id'
-    );
-    $delete->execute(['request_id' => $requestId]);
-
     $pdo->commit();
 
     echo "REQUEST REJECTED\n";

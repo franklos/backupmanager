@@ -1,15 +1,2 @@
-#!/bin/bash
-set -euo pipefail
-
-CONFIG=/etc/backupmanager/backupmanager.conf
-[ -r "$CONFIG" ] || exit 2
-source "$CONFIG"
-
-sudo -u backupmgr ssh \
-  -i "$SSH_KEY" \
-  -p "$BACKUP_PORT" \
-  -o BatchMode=yes \
-  -o ConnectTimeout=8 \
-  -o UserKnownHostsFile="$(dirname "$SSH_KEY")/known_hosts" \
-  "${BACKUP_USER}@${BACKUP_HOST}" \
-  "test -d '${BACKUP_PATH%/}/${SOURCE_ID}/data' && test -d '${BACKUP_PATH%/}/${SOURCE_ID}/database'"
+#!/bin/sh
+printf '%s\n' '{"action":"test"}' | /usr/local/sbin/backupmanager-control enqueue

@@ -1,0 +1,20 @@
+# Operator template: replace hostname, certificate paths and listen settings.
+# Serve ONLY public/, never the repository or /opt/backupmanager-provider itself.
+server {
+    listen 443 ssl;
+    server_name backup.example.com;
+    ssl_certificate /etc/ssl/local/provider-fullchain.pem;
+    ssl_certificate_key /etc/ssl/local/provider-private.key;
+    root /opt/backupmanager-provider/public;
+    client_max_body_size 32k;
+    location / { try_files $uri $uri/ /index.php?$query_string; }
+    location /admin/ { index index.php; }
+    location ~ ^/(index|admin/index)\.php$ {
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param HTTPS on;
+        fastcgi_pass unix:/run/php/backupmanager-provider.sock;
+    }
+    location ~ \.php$ { return 404; }
+    location ~ /\. { deny all; }
+}

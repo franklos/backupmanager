@@ -1,2 +1,2 @@
-ALTER TABLE provider_requests
-    ADD COLUMN requester_email VARCHAR(255) DEFAULT NULL AFTER source_url;
+-- Superseded by the idempotent provider/bin/migrate.php runner.
+-- Do not apply hand-written ALTER statements to an unknown schema version.

@@ -12,6 +12,9 @@ final class Config
 
     public function __construct(string $file)
     {
+        if (is_file('/etc/backupmanager-provider/config.php')) {
+            $file = '/etc/backupmanager-provider/config.php';
+        }
         if (!is_file($file)) {
             throw new RuntimeException('Provider configuration file not found');
         }
@@ -22,6 +25,10 @@ final class Config
             throw new RuntimeException('Invalid provider configuration');
         }
 
+        if (($config['storage']['root'] ?? '/var/lib/backupmanager-provider') !== '/var/lib/backupmanager-provider'
+            || ($config['storage']['user'] ?? 'backupstore') !== 'backupstore') {
+            throw new RuntimeException('Provider helpers require the documented fixed storage root and backupstore account');
+        }
         $this->config = $config;
     }
 

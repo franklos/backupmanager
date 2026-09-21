@@ -24,9 +24,13 @@ spl_autoload_register(function (string $class): void {
 });
 
 try {
+    if (($_SERVER['HTTPS'] ?? '') !== 'on') {
+        Response::json(['success' => false, 'error' => 'HTTPS is required'], 403);
+    }
     $config = new Config(dirname(__DIR__) . '/config/config.php');
     $database = new Database($config);
 
+    header('Cache-Control: no-store');
     $requestController = new RequestController($database, $config);
     $router = new Router();
 
@@ -40,12 +44,6 @@ try {
         'GET',
         '#^/api/v1/requests/([A-Za-z0-9-]+)/?$#',
         [$requestController, 'status']
-    );
-
-    $router->add(
-        'GET',
-        '#^/approval/(REQ-[0-9]{8}-[A-F0-9]{6})/(approve|reject)/?$#',
-        [$requestController, 'approvalAction']
     );
 
     $router->add(
@@ -84,11 +82,6 @@ try {
         [$requestController, 'managementRemoveClient']
     );
 
-    $router->add(
-        'GET',
-        '#^/api/v1/requests/([A-Za-z0-9-]+)/?$#',
-        [$requestController, 'status']
-    );
 
     $router->add(
         'POST',
@@ -111,6 +104,9 @@ try {
         ], 400);
     }
 
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && in_array(rtrim($path, '/'), ['/api/v1/requests', '/api/v1/recovery-requests'], true)) {
+        \BackupManager\Provider\Auth::rateLimit('enrollment');
+    }
     $router->dispatch(
         $_SERVER['REQUEST_METHOD'] ?? 'GET',
         $path

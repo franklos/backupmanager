@@ -17,7 +17,7 @@ final class AdminSection implements IIconSection {
     }
 
     public function getName(): string {
-        return $this->l10n->t('Back-upstatus');
+        return $this->l10n->t('Backup Manager');
     }
 
     public function getPriority(): int {

@@ -5,7 +5,6 @@ declare(strict_types=1);
 use BackupManager\Provider\Config;
 use BackupManager\Provider\Database;
 
-session_start();
 
 spl_autoload_register(function (string $class): void {
     $prefix = 'BackupManager\\Provider\\';
@@ -23,6 +22,7 @@ spl_autoload_register(function (string $class): void {
 });
 
 $config = new Config(dirname(__DIR__, 2) . '/config/config.php');
+\BackupManager\Provider\Auth::requireAdmin($config);
 $database = new Database($config);
 $pdo = $database->pdo();
 
@@ -60,6 +60,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $script = $action === 'approve'
                 ? dirname(__DIR__, 2) . '/bin/approve-recovery.php'
                 : dirname(__DIR__, 2) . '/bin/reject-recovery.php';
+        } elseif ($requestType === 'deletion' && preg_match('/^DEL-[0-9]{8}-[A-F0-9]{6}$/D', $requestId) === 1) {
+            $script = dirname(__DIR__, 2) . '/bin/' . ($action === 'approve' ? 'approve-deletion.php' : 'reject-deletion.php');
         } else {
             $error = 'Invalid request.';
         }
@@ -105,6 +107,7 @@ $providerStatement = $pdo->query(
         source_id,
         source_url,
         ssh_fingerprint,
+        restore_public_key,
         requested_at,
         expires_at,
         requester_ip
@@ -121,6 +124,7 @@ $recoveryStatement = $pdo->query(
         client_id,
         source_id,
         ssh_fingerprint,
+        restore_public_key,
         requested_at,
         expires_at,
         requester_ip
@@ -130,6 +134,14 @@ $recoveryStatement = $pdo->query(
 );
 
 $recoveryRequests = $recoveryStatement->fetchAll();
+$deletionRequests = $pdo->query('SELECT deletion_request_id, client_id, delete_storage FROM deletion_requests WHERE status IN ("pending", "approved", "failed")')->fetchAll();
+
+function readFingerprint(?string $key): string {
+    if (!$key) { return 'Missing read key: reject and re-enroll'; }
+    $parts = preg_split('/\s+/', trim($key));
+    $blob = base64_decode($parts[1] ?? '', true);
+    return $blob === false ? 'Invalid read key' : 'SHA256:' . rtrim(base64_encode(hash('sha256', $blob, true)), '=');
+}
 
 function h(string $value): string
 {
@@ -196,6 +208,8 @@ code { font-size: 0.88rem; }
 
 <div class="card">
 <h1>Backup Manager Provider</h1>
+<form method="post"><input type="hidden" name="csrf" value="<?= h((string)$_SESSION['csrf']) ?>"><button name="action" value="logout">Sign out</button></form>
+<p>Verify the requester and both key fingerprints through a trusted channel before approval. An enrollment using an existing source replaces that client's access.</p>
 
 <?php if ($message !== ''): ?>
     <div class="notice"><?= h($message) ?></div>
@@ -236,7 +250,7 @@ code { font-size: 0.88rem; }
             <div class="small">IP: <?= h((string)$request['requester_ip']) ?></div>
         <?php endif; ?>
     </td>
-    <td><code><?= h((string)$request['ssh_fingerprint']) ?></code></td>
+    <td><div>Write: <code><?= h((string)$request['ssh_fingerprint']) ?></code></div><div>Read: <code><?= h(readFingerprint($request['restore_public_key'])) ?></code></div></td>
     <td><?= h((string)$request['requested_at']) ?></td>
     <td><?= h((string)($request['expires_at'] ?? '')) ?></td>
     <td>
@@ -300,7 +314,7 @@ code { font-size: 0.88rem; }
             <div class="small">IP: <?= h((string)$request['requester_ip']) ?></div>
         <?php endif; ?>
     </td>
-    <td><code><?= h((string)$request['ssh_fingerprint']) ?></code></td>
+    <td><div>Write: <code><?= h((string)$request['ssh_fingerprint']) ?></code></div><div>Read: <code><?= h(readFingerprint($request['restore_public_key'])) ?></code></div></td>
     <td><?= h((string)$request['requested_at']) ?></td>
     <td><?= h((string)($request['expires_at'] ?? '')) ?></td>
     <td>
@@ -330,6 +344,14 @@ code { font-size: 0.88rem; }
 <?php endif; ?>
 
 </div>
+<div class="card"><h2>Pending deletion requests</h2>
+<?php foreach ($deletionRequests as $item): ?>
+<form method="post"><p><?= h((string)$item['client_id']) ?> — <?= $item['delete_storage'] ? 'Permanently delete backup data' : 'Preserve backup data' ?></p>
+<input type="hidden" name="csrf" value="<?= h((string)$_SESSION['csrf']) ?>">
+<input type="hidden" name="request_type" value="deletion">
+<input type="hidden" name="request_id" value="<?= h((string)$item['deletion_request_id']) ?>">
+<button name="action" value="approve">Approve deletion</button><button name="action" value="reject">Reject</button></form>
+<?php endforeach; ?></div>
 </main>
 </body>
 </html>

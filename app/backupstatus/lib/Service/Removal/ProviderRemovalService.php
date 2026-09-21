@@ -45,6 +45,7 @@ final class ProviderRemovalService implements RemoteRemovalInterface {
                         'delete_storage' => true,
                     ], JSON_UNESCAPED_SLASHES),
                     'timeout' => 30,
+                    'allow_redirects' => false,
                 ]
             );
 
@@ -67,7 +68,7 @@ final class ProviderRemovalService implements RemoteRemovalInterface {
             );
         } catch (Throwable $e) {
             return RemovalResult::failure(
-                'Provider deletion request failed: ' . $e->getMessage()
+                'Provider deletion request failed'
             );
         }
     }
