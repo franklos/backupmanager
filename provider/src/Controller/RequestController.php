@@ -114,7 +114,7 @@ final class RequestController
             $remoteIp = $_SERVER['REMOTE_ADDR'] ?? null;
 
             $pdo = $this->database->pdo();
-            $pdo->exec('UPDATE provider_requests SET status = "expired" WHERE status = "pending" AND expires_at < UTC_TIMESTAMP()');
+            $pdo->exec('UPDATE provider_requests SET status = "expired" WHERE status = "pending" AND (expires_at <= UTC_TIMESTAMP() OR restore_public_key IS NULL OR restore_public_key = "" OR restore_public_key = public_key)');
             $pdo->beginTransaction();
 
             $statement = $pdo->prepare(
@@ -291,7 +291,7 @@ final class RequestController
         if (
             $request['status'] === 'pending'
             && !empty($request['expires_at'])
-            && strtotime((string)$request['expires_at']) < time()
+            && strtotime((string)$request['expires_at'] . ' UTC') <= time()
         ) {
 
             $request['status'] = 'expired';
@@ -315,8 +315,7 @@ final class RequestController
                     c.client_id,
                     s.storage_host,
                     s.storage_port,
-                    s.storage_user,
-                    s.storage_path
+                    s.storage_user
                  FROM clients c
                  JOIN storage_allocations s
                    ON s.client_id = c.client_id
@@ -334,13 +333,8 @@ final class RequestController
             $connectionData = $connection->fetch();
 
             if (is_array($connectionData)) {
-                $response['connection'] = [
-                    'client_id' => $connectionData['client_id'],
-                    'host' => $connectionData['storage_host'],
-                    'port' => (int)$connectionData['storage_port'],
-                    'user' => $connectionData['storage_user'],
-                    'path' => '/',
-                ];
+                $response['connection'] = \BackupManager\Provider\StorageEndpoint::connection(
+                    $this->config, $connectionData['client_id']);
             }
         }
 
@@ -971,6 +965,28 @@ final class RequestController
     }
 
 
+    public function clientConnection(string $clientId): never
+    {
+        $authorization = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+        if (!str_starts_with($authorization, 'Bearer ') || trim(substr($authorization, 7)) === '') {
+            Response::json(['success' => false, 'error' => 'Missing bearer token'], 401);
+        }
+        $statement = $this->database->pdo()->prepare(
+            'SELECT c.client_id, c.api_token_hash FROM clients c
+             JOIN storage_allocations s ON s.client_id = c.client_id
+              AND s.status = "active" AND s.destination_type = "ssh"
+             WHERE c.client_id = :client_id AND c.status = "active" LIMIT 1'
+        );
+        $statement->execute(['client_id' => $clientId]);
+        $client = $statement->fetch();
+        if (!is_array($client) || !hash_equals((string)$client['api_token_hash'],
+            hash('sha256', trim(substr($authorization, 7))))) {
+            Response::json(['success' => false, 'error' => 'Client authorization failed'], 403);
+        }
+        Response::json(['success' => true, 'connection' =>
+            \BackupManager\Provider\StorageEndpoint::connection($this->config, $client['client_id'])]);
+    }
+
     public function clientStatus(string $clientId): never
     {
         $token = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
@@ -1153,11 +1169,12 @@ final class RequestController
 
             $pdo = $this->database->pdo();
 
+            $pdo->beginTransaction();
             $client = $pdo->prepare(
                 'SELECT client_id, source_id, status
                  FROM clients
                  WHERE client_id = :client_id
-                 LIMIT 1'
+                 LIMIT 1 FOR UPDATE'
             );
 
             $client->execute([
@@ -1173,7 +1190,8 @@ final class RequestController
                 ], 404);
             }
 
-            $pdo->exec('UPDATE recovery_requests SET status = "expired" WHERE status = "pending" AND expires_at < UTC_TIMESTAMP()');
+            $retire = $pdo->prepare('UPDATE recovery_requests SET status = "expired" WHERE client_id = :client AND status = "pending" AND (expires_at <= UTC_TIMESTAMP() OR restore_public_key IS NULL OR restore_public_key = "" OR restore_public_key = public_key)');
+            $retire->execute(['client' => $clientId]);
             $existing = $pdo->prepare(
                 'SELECT recovery_request_id
                  FROM recovery_requests
@@ -1211,7 +1229,6 @@ final class RequestController
                 time() + ($expiryHours * 3600)
             );
 
-            $pdo->beginTransaction();
 
             $insert = $pdo->prepare(
                 'INSERT INTO recovery_requests (
@@ -1292,6 +1309,9 @@ final class RequestController
             ], 201);
 
         } catch (Throwable $e) {
+            error_log('Backup Manager recovery request failed: ' . get_class($e)
+                . '; SQLSTATE=' . ($e instanceof \PDOException ? $e->getCode() : 'n/a')
+                . '; driver=' . ($e instanceof \PDOException ? (int)($e->errorInfo[1] ?? 0) : 0));
             if (isset($pdo) && $pdo instanceof PDO && $pdo->inTransaction()) {
                 $pdo->rollBack();
             }
@@ -1325,6 +1345,8 @@ final class RequestController
                 request_token_hash,
                 client_id,
                 source_id,
+                public_key,
+                restore_public_key,
                 status,
                 requested_at,
                 approved_at,
@@ -1361,7 +1383,7 @@ final class RequestController
         if (
             $request['status'] === 'pending'
             && !empty($request['expires_at'])
-            && strtotime((string)$request['expires_at']) < time()
+            && strtotime((string)$request['expires_at'] . ' UTC') <= time()
         ) {
 
             $request['status'] = 'expired';
@@ -1393,22 +1415,23 @@ final class RequestController
                   AND s.destination_type = "ssh"
                  WHERE c.client_id = :client_id
                    AND c.status = "active"
+                   AND c.api_token_hash = :token_hash
                  LIMIT 1'
             );
 
             $connection->execute([
                 'client_id' => $request['client_id'],
+                'token_hash' => $request['request_token_hash'],
             ]);
 
             $connectionData = $connection->fetch();
 
+            if (!is_array($connectionData)) { $response['status'] = 'superseded'; }
             if (is_array($connectionData)) {
-                $response['connection'] = [
-                    'client_id' => $connectionData['client_id'],
-                    'host' => $connectionData['storage_host'],
-                    'port' => (int)$connectionData['storage_port'],
-                    'user' => $connectionData['storage_user'],
-                    'path' => '/',
+                $response['connection'] = \BackupManager\Provider\StorageEndpoint::connection(
+                    $this->config, $connectionData['client_id']) + [
+                    'public_key' => $request['public_key'],
+                    'restore_public_key' => $request['restore_public_key'],
                 ];
             }
         }

@@ -1,6 +1,6 @@
 # Backup Manager for Nextcloud
 
-Backup Manager 0.2 provides a Nextcloud 34 administration app, an optional managed
+Backup Manager 0.2.4 provides a Nextcloud 34 administration app, an optional managed
 SSH provider, and a systemd backup/recovery runtime. Supported storage backends are
 restricted SSH/rsync, AWS S3, and HTTPS S3-compatible services.
 

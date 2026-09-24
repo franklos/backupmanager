@@ -4,11 +4,16 @@ cd "$(dirname "$0")/.."
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -v
 php tests/provider_security.php
 php tests/settings_status.php
+php tests/provider_admin.php
 php tests/runtime_service.php
 node tests/provider_status.js
 node tests/host_status.js
-find app provider -name '*.php' ! -path 'provider/config/config.php' -print0 | xargs -0 -n 1 php -l
-find app -name '*.js' -print0 | xargs -0 -n 1 node --check
+node tests/storage_visibility.js
+node tests/job_status.js
+php tests/status_messages.php
+if [ "${BM_BROWSER_TESTS:-0}" = 1 ]; then node tests/dashboard_browser.js; node tests/managed_recovery_browser.js; fi
+find app provider tests -name '*.php' ! -path 'provider/config/config.php' -print0 | xargs -0 -n 1 php -l
+find app tests -name '*.js' -print0 | xargs -0 -n 1 node --check
 python3 - <<'PY'
 import ast
 import subprocess

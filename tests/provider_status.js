@@ -23,14 +23,14 @@ function check(provider, recovery, runtime, clients, expected) {
     root.providerClients = clients;
     context.update(root);
     assert.equal(state, 'bm-status-' + expected);
-    assert.ok(details.textContent.includes('Access recovery request (SSH key replacement): ' + recovery));
+    assert.ok(details.textContent.includes('Access recovery request (SSH key replacement): ' + ({pending:'Waiting for approval',stale:'Request expired',expired:'Request expired',approved:'Approved',rejected:'Rejected',none:'Not tested'}[recovery] || 'Unknown')));
     assert.equal(root.dataset.recoveryStatus, recovery, 'Rendering must preserve the request state');
 }
 const active = [{client_id: 'BM-000001', status: 'active'}];
 for (const recovery of ['pending', 'stale', 'approved', 'rejected', 'expired']) {
-    check('approved', recovery, 'BM-000001', active, 'green');
+    check('approved', recovery, 'BM-000001', active, recovery === 'approved' ? 'green' : recovery === 'rejected' ? 'red' : 'orange');
 }
-check('pending', 'pending', 'BM-000001', active, 'green');
+check('pending', 'pending', 'BM-000001', active, 'orange');
 check('approved', 'pending', 'BM-000002', active, 'orange');
 check('approved', 'pending', '', active, 'orange');
 check('approved', 'pending', 'BM-000001', [{client_id: 'BM-000002', status: 'active'}], 'orange');
@@ -38,8 +38,8 @@ check('approved', 'pending', 'BM-000001', [{client_id: 'BM-000001', status: 'sus
 check('approved', 'pending', 'BM-000001', undefined, 'orange');
 check('approved', 'none', 'BM-000001', undefined, 'green');
 check('approved', 'none', '', undefined, 'orange');
-// Both polling orders must retain the live client verdict and both request details.
+// Both polling orders must preserve pending recovery attention despite an active client.
 for (const statuses of [['pending', 'approved'], ['approved', 'pending']]) {
-    for (const status of statuses) check(status, 'pending', 'BM-000001', active, 'green');
+    for (const status of statuses) check(status, 'pending', 'BM-000001', active, 'orange');
 }
 console.log('Provider status regression tests passed.');

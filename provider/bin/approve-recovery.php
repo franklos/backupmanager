@@ -37,11 +37,16 @@ if ($requestId === '' || $approvedBy === '') {
     fail('Usage: php approve-recovery.php RECOVERY_REQUEST_ID APPROVED_BY');
 }
 
+if (!preg_match('/^REC-[0-9]{8}-[A-F0-9]{6}$/D', $requestId)) { fail('Invalid request type or ID'); }
+
 try {
-    $config = new Config(dirname(__DIR__) . '/config/config.php');
+    $config = new Config();
     $database = new Database($config);
     $pdo = $database->pdo();
 
+    if ((int)$pdo->query("SELECT GET_LOCK('backupmanager-approval', 30)")->fetchColumn() !== 1) {
+        throw new RuntimeException('Approval busy');
+    }
     $pdo->beginTransaction();
 
     $statement = $pdo->prepare(
@@ -68,8 +73,8 @@ try {
     }
 
     if (
-        !empty($request['expires_at'])
-        && strtotime((string)$request['expires_at']) < time()
+        empty($request['expires_at'])
+        || strtotime((string)$request['expires_at'] . ' UTC') <= time()
     ) {
         $expire = $pdo->prepare(
             'UPDATE recovery_requests
@@ -84,6 +89,8 @@ try {
         $pdo->commit();
         fail('Recovery request has expired');
     }
+
+    \BackupManager\Provider\StorageEndpoint::configured($config);
 
     $clientId = (string)$request['client_id'];
 
@@ -104,8 +111,14 @@ try {
         throw new RuntimeException('Active client not found');
     }
 
+    // A reviewed source change is allowed, but cannot take another client's identity.
+    $sourceOwner = $pdo->prepare('SELECT client_id FROM clients WHERE source_id = ? FOR UPDATE');
+    $sourceOwner->execute([$request['source_id']]);
+    $owner = $sourceOwner->fetchColumn();
+    if ($owner !== false && $owner !== $clientId) { throw new RuntimeException('Recovery source belongs to another client'); }
+
     $storage = $pdo->prepare(
-        'SELECT storage_path
+        'SELECT storage_path, storage_host, storage_port
          FROM storage_allocations
          WHERE client_id = :client_id
            AND status = "active"
@@ -123,7 +136,11 @@ try {
         throw new RuntimeException('Active SSH storage allocation not found');
     }
 
+    \BackupManager\Provider\StorageEndpoint::validate($storageData['storage_host'], $storageData['storage_port']);
     $storagePath = (string)$storageData['storage_path'];
+    if ($storagePath !== '/var/lib/backupmanager-provider/' . $clientId) {
+        throw new RuntimeException('Existing storage allocation requires operator review; no keys or storage were changed');
+    }
 
     /*
      * Oude actieve keys markeren als replaced.
@@ -143,20 +160,17 @@ try {
     /*
      * Nieuwe key activeren.
      */
+    $existingKey = $pdo->prepare('SELECT client_id FROM ssh_keys WHERE fingerprint = :fingerprint FOR UPDATE');
+    $existingKey->execute(['fingerprint' => $request['ssh_fingerprint']]);
+    $keyOwner = $existingKey->fetchColumn();
+    if ($keyOwner !== false && $keyOwner !== $clientId) {
+        throw new RuntimeException('Recovery key already belongs to another client');
+    }
     $keyInsert = $pdo->prepare(
-        'INSERT INTO ssh_keys (
-            client_id,
-            public_key,
-            fingerprint,
-            status
-        ) VALUES (
-            :client_id,
-            :public_key,
-            :fingerprint,
-            "active"
-        )'
+        'INSERT INTO ssh_keys (client_id, public_key, fingerprint, status)
+         VALUES (:client_id, :public_key, :fingerprint, "active")
+         ON DUPLICATE KEY UPDATE public_key = VALUES(public_key), status = "active", revoked_at = NULL'
     );
-
     $keyInsert->execute([
         'client_id' => $clientId,
         'public_key' => $request['public_key'],
@@ -220,14 +234,17 @@ try {
         ], JSON_UNESCAPED_SLASHES),
     ]);
 
-    $provisionedClient = $clientId;
-    \BackupManager\Provider\Provisioning::install($clientId, (string)$request['public_key'], (string)$request['restore_public_key']);
+    $rotation = bin2hex(random_bytes(32));
+    \BackupManager\Provider\Provisioning::install($clientId, (string)$request['public_key'], (string)$request['restore_public_key'], true, $rotation);
     $credentials = $pdo->prepare('UPDATE clients SET api_token_hash = :token WHERE client_id = :client');
     $credentials->execute(['token' => $request['request_token_hash'], 'client' => $clientId]);
     $readKey = $pdo->prepare('UPDATE ssh_keys SET restore_public_key = :key WHERE client_id = :client AND status = "active"');
     $readKey->execute(['key' => $request['restore_public_key'], 'client' => $clientId]);
 
     $pdo->commit();
+    $committed = true;
+    try { \BackupManager\Provider\Provisioning::finish($clientId, $rotation, 'commit'); }
+    catch (Throwable) { error_log('Backup Manager credential transaction committed in DB but journal finalization needs operator reconciliation: ' . $clientId); }
 
     echo "RECOVERY APPROVED\n";
     echo "Request ID : {$requestId}\n";
@@ -238,9 +255,9 @@ try {
     echo "Fingerprint: {$request['ssh_fingerprint']}\n";
 
 } catch (Throwable $e) {
-    if (isset($provisionedClient)) {
-        exec('sudo -n /usr/local/sbin/backupmanager-remove-authorized-key ' . escapeshellarg($provisionedClient), $cleanupOutput, $cleanupCode);
-        // Never retain a newly issued key after a failed approval transaction.
+    if (isset($rotation) && empty($committed)) {
+        try { \BackupManager\Provider\Provisioning::finish($clientId, $rotation, 'rollback'); }
+        catch (Throwable) { error_log('Backup Manager credential rollback requires operator reconciliation: ' . $clientId); }
     }
     if (isset($pdo) && $pdo instanceof PDO && $pdo->inTransaction()) {
         $pdo->rollBack();

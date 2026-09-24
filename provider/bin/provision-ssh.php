@@ -10,7 +10,7 @@ spl_autoload_register(function ($class) {
 });
 $id = (string)($argv[1] ?? '');
 if (!preg_match('/^BM-[0-9]{6}$/D', $id)) { exit(1); }
-$config = new BackupManager\Provider\Config(dirname(__DIR__) . '/config/config.php');
+$config = new BackupManager\Provider\Config();
 $pdo = (new BackupManager\Provider\Database($config))->pdo();
 $query = $pdo->prepare('SELECT k.public_key, k.restore_public_key FROM ssh_keys k JOIN clients c ON c.client_id=k.client_id WHERE k.client_id=? AND k.status="active" AND c.status="active"');
 $query->execute([$id]);

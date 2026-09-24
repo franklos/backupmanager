@@ -14,8 +14,9 @@ import tempfile
 import uuid
 from pathlib import Path, PurePosixPath
 
+from .errors import failure_info
 from .config import atomic_json
-from .phpconfig import parse, render
+from .phpconfig import parse, render, read_config, check_data_directory
 from .storage import GENERATION, MAX_OBJECT, backend
 
 
@@ -89,8 +90,14 @@ def extract_archive(file, target):
 
 class Engine:
     def __init__(self, config, storage=None, run=subprocess.run):
-        self.cfg, self.storage, self.run = config, storage or backend(config), run
+        self.cfg, self._storage, self.run = config, storage, run
         self.root = Path(config['runtime'])
+
+    @property
+    def storage(self):
+        if self._storage is None:
+            self._storage = backend(self.cfg)
+        return self._storage
 
     def command(self, args, **kwargs):
         result = self.run(args, capture_output=True, **kwargs)
@@ -100,15 +107,7 @@ class Engine:
         return result.stdout
 
     def nc_config(self):
-        directory = Path(self.cfg['nc_path']) / 'config'
-        if directory.is_symlink() or (directory / 'config.php').is_symlink():
-            raise ValueError('Symlink configuration refused')
-        value = parse((directory / 'config.php').read_text())
-        for extra in sorted(directory.glob('*.config.php')):
-            if extra.is_symlink():
-                raise ValueError('Symlink configuration refused')
-            value.update(parse(extra.read_text()))
-        return value
+        return read_config(self.cfg['nc_path'])
 
     def occ(self, *args):
         return self.command(['runuser', '-u', self.cfg['nc_user'], '--', 'php',
@@ -181,8 +180,7 @@ class Engine:
 
     def backup(self):
         with lock(self.root):
-            self.status(state='running', last_attempt=utcnow().isoformat(), error='')
-            enabled = False
+            self.status(state='running', last_attempt=utcnow().isoformat(), error='', error_code='', error_detail='', cleanup_error=None, finalizer=None)
             try:
                 with tempfile.TemporaryDirectory(dir=self.root, prefix='stage-') as directory:
                     stage = Path(directory)
@@ -191,16 +189,11 @@ class Engine:
                         raise ValueError('Primary object storage requires a separate object-storage backup')
                     if config.get('maintenance', False):
                         raise RuntimeError('Nextcloud is already in maintenance mode; operator action required')
-                    if Path(str(config.get('datadirectory', ''))).resolve() != Path(self.cfg['data_path']).resolve():
-                        raise ValueError('Configured data directory does not match Nextcloud')
-                    enabled = True
-                    self.maintenance(True)
-                    # The operator must stop external writers; Nextcloud maintenance blocks normal requests/jobs.
+                    check_data_directory(config, self.cfg['data_path'])
+                    # Online backup: leave Nextcloud availability and maintenance state unchanged.
                     self.dump(config, stage / 'database')
                     self.archive_data(stage / 'data')
                     (stage / 'config').write_text('<?php\n$CONFIG = ' + render(config) + ';\n')
-                    self.maintenance(False)
-                    enabled = False
                     generation = utcnow().strftime('%Y%m%dT%H%M%SZ-') + uuid.uuid4().hex[:12]
                     manifest = {'version': 1, 'generation': generation, 'created_at': utcnow().isoformat(),
                                 'source_id': self.cfg['source_id'], 'artifacts': {}}
@@ -215,18 +208,12 @@ class Engine:
                     encoded = json.dumps(manifest, sort_keys=True).encode()
                     validate_manifest(encoded, generation)
                     self.storage.put(f'generations/{generation}/manifest.json', encoded)
-                    self.status(state='ok', last_success=utcnow().isoformat(), generation=generation, error='')
+                    self.status(state='ok', last_success=utcnow().isoformat(), generation=generation, error='', error_code='', error_detail='', cleanup_error=None, finalizer=None)
                     self.retention(generation)
                     return generation
-            except Exception:
-                self.status(state='failed', error='Backup failed; inspect configuration, storage and dependencies')
+            except Exception as error:
+                self.status(state='failed', **failure_info(error))
                 raise
-            finally:
-                if enabled:
-                    try:
-                        self.maintenance(False)
-                    except Exception:
-                        self.status(state='maintenance_required', error='Unable to disable maintenance after backup')
 
     def retention(self, newest):
         cutoff = utcnow() - dt.timedelta(days=self.cfg['retention_days'])
@@ -298,8 +285,7 @@ class Engine:
             restored_config = parse((stage / 'config').read_text())
             if local.get('version') != restored_config.get('version'):
                 raise ValueError('Install the same Nextcloud version as the recovery point before restoring')
-            if Path(str(local.get('datadirectory', ''))).resolve() != Path(self.cfg['data_path']).resolve():
-                raise ValueError('Configured data directory does not match Nextcloud')
+            check_data_directory(local, self.cfg['data_path'])
             with tarfile.open(stage / 'data', 'r:gz') as archive:
                 required_space = sum(member.size for member in archive if member.isfile())
             if shutil.disk_usage(stage).free < required_space:
@@ -312,7 +298,7 @@ class Engine:
             if local.get('maintenance', False):
                 raise RuntimeError('Maintenance already enabled; inspect the previous operation before retrying')
             self.maintenance(True)
-            self.status(state='restoring', error='')
+            self.status(state='restoring', error='', error_code='', error_detail='', cleanup_error=None, finalizer=None)
             try:
                 if kind == 'disaster':
                     restored = restored_config
@@ -353,8 +339,8 @@ class Engine:
                 self.occ('maintenance:repair')
                 self.occ('maintenance:data-fingerprint')
                 self.maintenance(False)
-                self.status(state='restored', restored_generation=generation, error='')
+                self.status(state='restored', restored_generation=generation, error='', error_code='', error_detail='', cleanup_error=None, finalizer=None)
                 return {'restored': generation}
-            except Exception:
-                self.status(state='maintenance_required', error='Restore failed; maintenance remains enabled. Operator intervention required.')
+            except Exception as error:
+                self.status(state='maintenance_required', **failure_info(error))
                 raise

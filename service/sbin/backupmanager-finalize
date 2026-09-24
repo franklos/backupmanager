@@ -5,4 +5,10 @@ sys.path.insert(0, '/usr/local/lib/backupmanager')
 from backupmanager.finalize import finalize
 if len(sys.argv) != 2:
     raise SystemExit('Invalid arguments')
-finalize(sys.argv[1], os.environ.get('SERVICE_RESULT', 'unknown'))
+try:
+    finalize(sys.argv[1], os.environ.get('SERVICE_RESULT', 'unknown'),
+             os.environ.get('EXIT_CODE', ''), os.environ.get('EXIT_STATUS', ''))
+except Exception as error:
+    # A finalizer failure is a separate service diagnostic, never a new root cause.
+    print('Backup Manager finalizer failed: ' + type(error).__name__ + '; existing operation errors were not replaced', file=sys.stderr)
+    raise SystemExit(1)

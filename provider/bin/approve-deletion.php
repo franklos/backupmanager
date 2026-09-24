@@ -34,7 +34,7 @@ if ($requestId === '' || $approvedBy === '') {
 }
 
 try {
-    $config = new Config(dirname(__DIR__) . '/config/config.php');
+    $config = new Config();
     $db = new Database($config);
     $pdo = $db->pdo();
 

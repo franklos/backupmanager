@@ -3,6 +3,14 @@ declare(strict_types=1);
 namespace BackupManager\Provider;
 
 final class Auth {
+    public static function requireManagement(Config $config): void {
+        $header = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+        $file = (string)$config->get('api', 'management_token_file', '/etc/backupmanager-provider/management-token');
+        $expected = is_readable($file) ? trim((string)file_get_contents($file)) : '';
+        if (!str_starts_with($header, 'Bearer ') || $expected === '' || !hash_equals($expected, trim(substr($header, 7)))) {
+            Response::json(['success' => false, 'error_code' => 'provider_forbidden', 'error' => 'Management authentication required'], 403);
+        }
+    }
     public static function requireAdmin(Config $config): void {
         if (($_SERVER['HTTPS'] ?? '') !== 'on') {
             http_response_code(403);
@@ -15,6 +23,7 @@ final class Auth {
         ini_set('session.use_strict_mode', '1');
         session_start();
         $_SESSION['csrf'] ??= bin2hex(random_bytes(32));
+        $_SESSION['provider_lang'] = AdminText::language();
         $file = (string)$config->get('admin', 'password_hash_file', '/etc/backupmanager-provider/admin-password.hash');
         $hash = is_readable($file) ? trim((string)file_get_contents($file)) : '';
         if (isset($_SESSION['authenticated_until']) && (int)$_SESSION['authenticated_until'] > time()
@@ -41,10 +50,11 @@ final class Auth {
             http_response_code(401);
         }
         $csrf = htmlspecialchars($_SESSION['csrf'], ENT_QUOTES, 'UTF-8');
-        echo '<!doctype html><html lang="en"><meta charset="utf-8"><title>Provider sign in</title>';
-        echo '<h1>Backup Manager provider</h1><form method="post"><input type="hidden" name="action" value="login">';
+        $t = static fn(string $text): string => htmlspecialchars(AdminText::translate($text), ENT_QUOTES, 'UTF-8');
+        echo '<!doctype html><html lang="' . AdminText::language() . '"><meta charset="utf-8"><title>' . $t('Provider sign in') . '</title>';
+        echo '<nav><a href="?lang=nl">Nederlands</a> · <a href="?lang=en">English</a></nav><h1>' . $t('Backup Manager provider') . '</h1><form method="post"><input type="hidden" name="action" value="login">';
         echo '<input type="hidden" name="csrf" value="' . $csrf . '">';
-        echo '<label>Administrator password <input type="password" name="password" autocomplete="current-password" required></label><button>Sign in</button></form></html>';
+        echo '<label>' . $t('Administrator password') . ' <input type="password" name="password" autocomplete="current-password" required></label><button>' . $t('Sign in') . '</button></form></html>';
         exit;
     }
 

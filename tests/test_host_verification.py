@@ -76,3 +76,16 @@ class HostVerificationTests(unittest.TestCase):
             self.assertEqual(control.main(), 1)
         self.assertFalse(json.loads(output.getvalue())['success'])
         self.assertIn('fixture config unreadable', errors.getvalue())
+
+    def test_recovery_key_rotation_invalidates_old_authentication_failure(self):
+        read_key=Path(self.cfg['runtime'])/'read-key'
+        self.cfg['ssh_read_key']=str(read_key)
+        read_key.write_text('old-fixture-credential')
+        from backupmanager.errors import Failure
+        with patch.object(storage.SSH,'rsync',side_effect=Failure('ssh_authentication')):
+            with self.assertRaises(Failure): control.trust(self.cfg,{})
+        self.assertEqual(control.host_status(self.cfg)['host_error_code'],'ssh_authentication')
+        read_key.write_text('replacement-fixture-credential')
+        result=control.host_status(self.cfg)
+        self.assertTrue(result['host_trusted'])  # The pin remains; new authentication is not inferred.
+        self.assertEqual(result['host_error'],'')

@@ -37,6 +37,21 @@ namespace {
     if ($fingerprint->invoke($controller, $key) === null || $fingerprint->invoke($controller, $key . "\nssh-ed25519 AAAA") !== null) {
         throw new RuntimeException('SSH key validation failed');
     }
+    require $root . '/provider/src/Auth.php';
+    require $root . '/provider/src/Controller/ManagementController.php';
+    $management=new BackupManager\Provider\Controller\ManagementController($database,$config);
+    foreach (['', 'Bearer invalid-fixture-token'] as $header) {
+        $_SERVER['HTTP_AUTHORIZATION']=$header;
+        foreach (['requests','action'] as $method) {
+            try {
+                if ($method==='requests') { $management->requests(); }
+                else { $management->action('recovery','REC-20260923-ABCDEF','approve'); }
+                throw new RuntimeException('Unauthorized management request accepted');
+            } catch (BackupManager\Provider\JsonExit $response) {
+                if ($response->status !== 403) { throw new RuntimeException('Management authentication boundary failed'); }
+            }
+        }
+    }
     $routes = file_get_contents($root . '/provider/public/index.php');
     if (str_contains($routes, '/approval/')) { throw new RuntimeException('State-changing approval route remains'); }
     echo "Provider authentication and public-key boundary tests passed.\n";

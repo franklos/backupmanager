@@ -4,6 +4,8 @@ import datetime as dt
 import hashlib
 import hmac
 import json
+import os
+import stat
 import re
 import shlex
 import subprocess
@@ -14,6 +16,8 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from .config import s3_endpoint, validate_s3_credentials
+from .errors import Failure
 
 GENERATION = re.compile(r'^\d{8}T\d{6}Z-[a-f0-9]{12}$')
 OBJECT = re.compile(r'^generations/(\d{8}T\d{6}Z-[a-f0-9]{12})/(manifest\.json|(?:data|database|config)\.\d{6})$')
@@ -52,6 +56,8 @@ class Storage(abc.ABC):
 
 class SSH(Storage):
     def __init__(self, config, run=subprocess.run):
+        if not config['ssh_host']:
+            raise ValueError('Complete managed provider enrollment or configure a manual SSH host first')
         self.cfg, self.run = config, run
 
     def command(self, read=False):
@@ -77,7 +83,14 @@ class SSH(Storage):
             import sys
             diagnostic = result.stderr.decode('utf-8', errors='replace')
             print('Backup Manager SSH failure: ' + ''.join(c for c in diagnostic if c.isprintable() or c == '\n')[:2000], file=sys.stderr)
-            raise RuntimeError('SSH transfer failed; verify host trust, permissions and connectivity')
+            lower = diagnostic.lower()
+            if 'host key verification failed' in lower or 'remote host identification has changed' in lower:
+                raise Failure('ssh_host_verification')
+            if 'permission denied (publickey' in lower or 'authentication failed' in lower:
+                raise Failure('ssh_authentication')
+            if 'permission denied' in lower or 'operation not permitted' in lower:
+                raise Failure('storage_permission')
+            raise Failure('rsync_failed')
         return result.stdout.decode('utf-8', errors='strict')
 
     def temp(self):
@@ -144,18 +157,22 @@ class S3(Storage):
     in a root-only local file and never appear in arguments or returned errors.
     """
     def __init__(self, config, opener=None, clock=None):
-        self.cfg = config
+        self.cfg = config | {'s3_endpoint': s3_endpoint(config)}
         self.opener = opener or urllib.request.build_opener(NoRedirect())
         self.clock = clock or (lambda: dt.datetime.now(dt.timezone.utc))
-        file = Path(config['s3_credentials'])
-        if file.is_symlink() or file.stat().st_mode & 0o077:
-            raise ValueError('S3 credentials must be a private regular file')
-        self.credentials = json.loads(file.read_text())
-        for key in ('access_key', 'secret_key'):
-            if not isinstance(self.credentials.get(key), str) or not self.credentials[key]:
-                raise ValueError('S3 credentials incomplete')
-        if any('\n' in str(v) or '\r' in str(v) for v in self.credentials.values()):
-            raise ValueError('Invalid S3 credentials')
+        # Check the opened file, not a pathname that could change between checks.
+        try:
+            fd = os.open(config['s3_credentials'], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, 'rb') as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_uid != os.geteuid():
+                    raise ValueError('S3 credentials must be a private regular file owned by the runtime user')
+                raw = stream.read(65537)
+                if len(raw) > 65536:
+                    raise ValueError('S3 credential file is too large')
+                self.credentials = validate_s3_credentials(json.loads(raw))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            raise ValueError('S3 credentials unavailable or invalid; check the private credential file') from None
 
     def request(self, method, key='', data=b'', query=None):
         quote = lambda value: urllib.parse.quote(str(value), safe='-_.~')
@@ -194,10 +211,12 @@ class S3(Storage):
                     return result
             except urllib.error.HTTPError as error:
                 if error.code not in (429, 500, 502, 503, 504) or attempt == 3:
-                    raise RuntimeError('S3 request failed (HTTP ' + str(error.code) + '); check endpoint, region, policy and credentials') from None
+                    import sys
+                    print('Backup Manager S3 API failure: HTTP ' + str(error.code), file=sys.stderr)
+                    raise Failure('s3_authentication' if error.code in (401, 403) else 's3_api') from None
             except (urllib.error.URLError, TimeoutError):
                 if attempt == 3:
-                    raise RuntimeError('S3 connection failed') from None
+                    raise Failure('connection_failed') from None
             time.sleep(2 ** attempt)
 
     def object_key(self, key):

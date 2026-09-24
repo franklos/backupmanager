@@ -38,7 +38,8 @@ if name not in ('backupmanager-install-authorized-keys', 'backupmanager-remove-a
     raise SystemExit(2)
 if name == 'backupmanager-install-authorized-keys':
     data = json.load(sys.stdin)
-    assert data['write_key'] != data['read_key']
+    if data.get('operation') not in ('commit', 'rollback'):
+        assert data['write_key'] != data['read_key']
 if (root / 'fail-helper').exists() and (root / 'fail-helper').read_text() == name:
     raise SystemExit(1)
 with open(root / 'helper-calls', 'a') as out:
@@ -56,6 +57,16 @@ with open(root / 'helper-calls', 'a') as out:
                     def db_command(self, executable):
                         return [executable]
                     def command(self, args, **kwargs):
+                        if '/usr/local/sbin/backupmanager-config-install' in args:
+                            # Exercise the actual helper on the private fixture, without runuser.
+                            import io
+                            from unittest.mock import patch
+                            from backupmanager import config_install
+                            with patch.object(config_install.sys, 'argv', ['backupmanager-config-install', args[-1]]), \
+                                 patch.object(config_install.sys, 'stdin', io.TextIOWrapper(io.BytesIO(kwargs['input']))), \
+                                 patch.object(config_install.os, 'geteuid', return_value=1000):
+                                config_install.main()
+                            return b''
                         if 'rsync' in args:
                             args = args[args.index('rsync'):]
                         return engine.Engine.command(self, args, **kwargs)
@@ -65,23 +76,59 @@ with open(root / 'helper-calls', 'a') as out:
                 subprocess.run(sql + ['-e', "CREATE TABLE recovery_fixture (value VARCHAR(32)); INSERT INTO recovery_fixture VALUES ('original')"], check=True, capture_output=True)
                 nc = root / 'nextcloud'
                 (nc / 'config').mkdir(parents=True)
-                (nc / 'data').mkdir()
-                (nc / 'data/file.txt').write_text('original file')
+                source_data = root / 'external-source-data'
+                source_data.mkdir()
+                (source_data / 'file.txt').write_text('original file')
                 runtime = root / 'runtime'
                 runtime.mkdir()
                 settings = {'dbtype': 'mysql', 'dbhost': 'localhost:' + str(socket), 'dbname': 'bm_fixture', 'dbuser': 'root', 'dbpassword': '',
-                            'version': '34.0.0', 'datadirectory': str(nc / 'data')}
+                            'version': '34.0.0', 'datadirectory': str(nc / 'data'),
+                            'instanceid': 'fixture-instance', 'secret': 'fixture-instance-secret', 'passwordsalt': 'fixture-salt'}
                 (nc / 'config/config.php').write_text('<?php $CONFIG = ' + phpconfig.render(settings) + ';')
-                cfg = config.validate({'runtime': str(runtime), 'nc_path': str(nc), 'data_path': str(nc / 'data')})
+                override = nc / 'config/storage.config.php'
+                override.write_text('<?php $CONFIG = ' + phpconfig.render({'datadirectory': str(source_data)}) + ';')
+                cfg = config.validate({'runtime': str(runtime), 'nc_path': str(nc), 'data_path': str(source_data)})
                 runtime_engine = DatabaseEngine(cfg, MemoryStorage())
                 generation = runtime_engine.backup()
                 subprocess.run(sql + ['-e', "UPDATE recovery_fixture SET value='changed'"], check=True, capture_output=True)
-                (nc / 'data/file.txt').write_text('changed file')
+                (source_data / 'file.txt').write_text('changed file')
                 runtime_engine.restore(generation, 'complete')
                 restored = subprocess.run(sql + ['-N', '-e', 'SELECT value FROM recovery_fixture'], check=True, capture_output=True, text=True)
                 self.assertEqual(restored.stdout.strip(), 'original')
-                self.assertEqual((nc / 'data/file.txt').read_text(), 'original file')
+                self.assertEqual((source_data / 'file.txt').read_text(), 'original file')
                 self.assertEqual(runtime_engine.preserved_app, {'apps': {'backupstatus': {}}})
+                # The saved effective config retains the original external path and instance secrets.
+                snapshot = root / 'snapshot'
+                snapshot.mkdir()
+                runtime_engine.download(generation, snapshot)
+                archived = phpconfig.parse((snapshot / 'config').read_text())
+                self.assertEqual(archived['datadirectory'], str(source_data))
+                self.assertEqual(archived['secret'], 'fixture-instance-secret')
+                self.assertEqual(archived['passwordsalt'], 'fixture-salt')
+
+                # Recover onto a different external mount; never fall back to nextcloud/data.
+                destination_data = root / 'external-recovery-data'
+                destination_data.mkdir()
+                (destination_data / 'unrelated.txt').write_text('replace fixture destination')
+                (source_data / 'file.txt').write_text('leave original source untouched')
+                override.write_text('<?php $CONFIG = ' + phpconfig.render({'datadirectory': str(destination_data), 'secret': 'replacement-install-secret'}) + ';')
+                runtime_engine.cfg = config.validate(cfg | {'data_path': str(destination_data)})
+                subprocess.run(sql + ['-e', "UPDATE recovery_fixture SET value='before-disaster'"], check=True, capture_output=True)
+                runtime_engine.restore(generation, 'disaster')
+                recovered = phpconfig.read_config(nc)
+                self.assertEqual(recovered['datadirectory'], str(destination_data))
+                for key in ('instanceid', 'secret', 'passwordsalt'):
+                    self.assertEqual(recovered[key], archived[key])
+                self.assertEqual(recovered['dbhost'], settings['dbhost'])
+                self.assertFalse(recovered['maintenance'])
+                self.assertFalse(override.exists())
+                self.assertFalse((nc / 'data').exists())
+                self.assertEqual((destination_data / 'file.txt').read_text(), 'original file')
+                self.assertFalse((destination_data / 'unrelated.txt').exists())
+                self.assertEqual((source_data / 'file.txt').read_text(), 'leave original source untouched')
+                restored = subprocess.run(sql + ['-N', '-e', 'SELECT value FROM recovery_fixture'], check=True, capture_output=True, text=True)
+                self.assertEqual(restored.stdout.strip(), 'original')
+
             finally:
                 server.terminate()
                 try:

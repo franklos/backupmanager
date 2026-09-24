@@ -100,7 +100,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_settings_validation(self):
         for values in [{'ssh_host': '-oProxyCommand=bad'}, {'ssh_path': '/../other'}, {'nc_path': '/'},
-                       {'days': 'Mon\nOther'}, {'s3_endpoint': 'http://example.com'}, {'ssh_port': True},
+                       {'days': 'Mon\nOther'}, {'destination': 's3_compatible', 's3_endpoint': 'http://example.com'}, {'ssh_port': True},
                        {'destination': 'aws_s3', 's3_bucket': 'fixture-bucket', 's3_prefix': '../other'}]:
             with self.subTest(values=values), self.assertRaises((ValueError, TypeError)):
                 config.validate(values)
@@ -127,6 +127,63 @@ class LifecycleTests(unittest.TestCase):
         self.store = MemoryStorage()
         self.engine = FixtureEngine(self.cfg, self.store)
 
+    def test_backup_leaves_nextcloud_online(self):
+        config_file = Path(self.cfg['nc_path']) / 'config/config.php'
+        original_config = config_file.read_bytes()
+        with patch.object(self.engine, 'maintenance', side_effect=AssertionError('Backup toggled maintenance')):
+            generation = self.engine.backup()
+        self.assertEqual(self.store.inventory(), [generation])
+        self.assertEqual(control.safe_status(self.cfg)['state'], 'ok')
+        self.assertEqual(config_file.read_bytes(), original_config)
+        self.assertEqual(self.engine.commands, [])
+
+    def test_failed_backup_leaves_nextcloud_online(self):
+        for operation in ('dump', 'archive_data'):
+            with self.subTest(operation=operation), patch.object(self.engine, operation, side_effect=RuntimeError('Capture failed')), patch.object(self.engine, 'maintenance', side_effect=AssertionError('Backup toggled maintenance')):
+                with self.assertRaisesRegex(RuntimeError, 'Capture failed'):
+                    self.engine.backup()
+                self.assertEqual(control.safe_status(self.cfg)['state'], 'failed')
+                self.assertFalse(self.engine.nc_config().get('maintenance', False))
+                self.assertEqual(self.store.inventory(), [])
+                self.assertEqual(list(Path(self.cfg['runtime']).glob('stage-*')), [])
+
+    def test_large_backup_leaves_nextcloud_online_across_chunks(self):
+        # Incompressible data exercises the real 64 MiB upload boundary.
+        with (Path(self.cfg['data_path']) / 'large.bin').open('wb') as stream:
+            for _ in range(engine.MAX_OBJECT // (1024 * 1024) + 1):
+                stream.write(os.urandom(1024 * 1024))
+        config_file = Path(self.cfg['nc_path']) / 'config/config.php'
+        original_config = config_file.read_bytes()
+        with patch.object(self.engine, 'maintenance', side_effect=AssertionError('Backup toggled maintenance')):
+            generation = self.engine.backup()
+            manifest = json.loads(self.store.get(f'generations/{generation}/manifest.json'))
+            self.assertGreater(len(manifest['artifacts']['data']), 1)
+            self.assertEqual(manifest['artifacts']['data'][0]['size'], engine.MAX_OBJECT)
+            self.assertEqual(self.engine.commands, [])
+            self.assertEqual(self.engine.restore(generation, verify=True), {'verified': generation})
+        self.assertEqual(list(self.store.objects)[-1], f'generations/{generation}/manifest.json')
+        self.assertEqual(control.safe_status(self.cfg)['state'], 'ok')
+        self.assertEqual(config_file.read_bytes(), original_config)
+        self.assertFalse(any('maintenance:mode' in command for command in self.engine.commands))
+
+    def test_interrupted_backup_does_not_toggle_maintenance(self):
+        with patch.object(self.engine, 'archive_data', side_effect=KeyboardInterrupt), patch.object(self.engine, 'maintenance', side_effect=AssertionError('Backup toggled maintenance')):
+            with self.assertRaises(KeyboardInterrupt):
+                self.engine.backup()
+        self.assertFalse(self.engine.nc_config().get('maintenance', False))
+        self.assertEqual(self.engine.commands, [])
+        self.assertEqual(self.store.inventory(), [])
+        self.assertEqual(list(Path(self.cfg['runtime']).glob('stage-*')), [])
+
+    def test_backup_preserves_existing_maintenance_mode(self):
+        self.engine.maintenance(True)
+        self.engine.commands.clear()
+        with self.assertRaisesRegex(RuntimeError, 'already in maintenance mode'):
+            self.engine.backup()
+        self.assertTrue(self.engine.nc_config()['maintenance'])
+        self.assertEqual(self.engine.commands, [])
+        self.assertEqual(self.store.inventory(), [])
+
     def test_backup_verify_and_data_restore(self):
         generation = self.engine.backup()
         self.assertEqual(self.store.inventory(), [generation])
@@ -147,6 +204,8 @@ class LifecycleTests(unittest.TestCase):
             self.engine.backup()
         self.assertEqual(self.store.inventory(), [])
         self.assertEqual(control.safe_status(self.cfg)['state'], 'failed')
+        self.assertEqual(self.engine.commands, [])
+        self.assertFalse(self.engine.nc_config().get('maintenance', False))
 
     def test_corruption_stops_before_maintenance_or_mutation(self):
         generation = self.engine.backup()
@@ -309,12 +368,17 @@ class ProviderKeyTests(unittest.TestCase):
     def public(self, byte):
         return 'ssh-ed25519 ' + base64.b64encode(struct.pack('>I', 11) + b'ssh-ed25519' + struct.pack('>I', 32) + bytes([byte]) * 32).decode()
 
-    def test_enrollment_accepts_newline_terminated_public_sidecar(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            private = Path(tmp) / 'id_ed25519'
-            public = Path(str(private) + '.pub')
-            public.write_text(self.public(7) + '\n')
-            self.assertEqual(client_helpers.public_key(private), self.public(7))
+    def test_enrollment_derives_the_private_key_despite_stale_public_sidecar(self):
+        with tempfile.TemporaryDirectory() as directory:
+            private=Path(directory)/'key'
+            subprocess.run(['ssh-keygen','-q','-t','ed25519','-N','','-f',str(private)],check=True)
+            public=Path(str(private)+'.pub')
+            expected=' '.join(public.read_text().split()[:2])
+            self.assertEqual(client_helpers.public_key(private),expected)
+            public.write_text(self.public(7)+'\n')
+            self.assertEqual(client_helpers.public_key(private),expected)
+            public.unlink()
+            self.assertEqual(client_helpers.public_key(private),expected)
 
     def test_wire_format_and_injected_options(self):
         self.assertEqual(provider_helpers.key(self.public(1)), self.public(1))
@@ -330,10 +394,19 @@ class ProviderKeyTests(unittest.TestCase):
             import pwd
             with patch.object(provider_helpers, 'ROOT', root), patch.object(provider_helpers, 'ACCOUNT', account), patch.object(provider_helpers.pwd, 'getpwnam', return_value=pwd.getpwuid(os.getuid())):
                 provider_helpers.install({'client_id': 'BM-000001', 'write_key': self.public(1), 'read_key': self.public(2)})
+                allocation = root / 'BM-000001'
+                for component in ('config', 'database', 'data', 'generations'):
+                    (allocation / component).mkdir()
+                    (allocation / component / 'existing').write_bytes(b'preserve-existing-storage')
+                provider_helpers.install({'client_id': 'BM-000001', 'write_key': self.public(1), 'read_key': self.public(2)})
+                for component in ('config', 'database', 'data', 'generations'):
+                    self.assertEqual((allocation / component / 'existing').read_bytes(), b'preserve-existing-storage')
                 text = (account / '.ssh/authorized_keys').read_text()
                 self.assertIn('rrsync -wo ', text)
                 self.assertIn('rrsync -ro ', text)
                 self.assertEqual(text.count('restrict,command='), 2)
+                self.assertIn('rrsync -wo -munge ' + str(allocation), text)
+                self.assertIn('rrsync -ro -munge ' + str(allocation), text)
                 with self.assertRaises(ValueError):
                     provider_helpers.install({'client_id': 'BM-000003', 'write_key': self.public(1), 'read_key': self.public(2)})
                 provider_helpers.remove('BM-000001')
@@ -400,7 +473,7 @@ class CredentialSaveTests(unittest.TestCase):
     def test_atomic_credentials_and_schedule_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            cfg = dict(config.DEFAULTS, runtime=directory, s3_credentials=str(root / 'old.json'))
+            cfg = config.validate(dict(destination='s3_compatible', s3_bucket='fixture-bucket', s3_prefix='fixture', runtime=directory, s3_credentials=str(root / 'old.json')))
             config.atomic_json(root / 'old.json', {'access_key': 'fixture', 'secret_key': 'fixture'})
             target = root / 'runtime.json'
             config.atomic_json(target, cfg)

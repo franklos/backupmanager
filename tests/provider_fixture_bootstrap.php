@@ -5,7 +5,7 @@ namespace BackupManager\Provider;
 final class Config {
     public function __construct(string $unused = '') {}
     public function get(string $section, string $key, mixed $default = null): mixed {
-        return ['storage' => ['host' => 'storage.example.test', 'port' => 22, 'user' => 'backupstore', 'root' => '/var/lib/backupmanager-provider'],
+        return ['storage' => ['host' => (getenv('BM_TEST_STORAGE_HOST') ?: (getenv('BM_JOURNEY_ROOT') ? '127.0.0.1' : 'storage.example.test')), 'port' => (int)(getenv('BM_JOURNEY_PORT') ?: 22), 'user' => 'backupstore', 'root' => '/var/lib/backupmanager-provider'],
             'api' => ['request_expiry_hours' => 24]][$section][$key] ?? $default;
     }
 }
@@ -16,7 +16,7 @@ final class Database {
         if (!is_string($socket) || !preg_match('#^/tmp/bm-integration-[A-Za-z0-9_-]+/server.sock$#D', $socket)) {
             throw new \RuntimeException('Only the isolated fixture socket is allowed');
         }
-        $this->connection = new \PDO('mysql:unix_socket=' . $socket . ';dbname=bm_fixture', 'root', '', [
+        $this->connection = new \PDO('mysql:unix_socket=' . $socket . ';dbname=' . (getenv('BM_JOURNEY_ROOT') ? 'bm_journey' : 'bm_fixture'), 'root', '', [
             \PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION,
             \PDO::ATTR_DEFAULT_FETCH_MODE => \PDO::FETCH_ASSOC,
             \PDO::ATTR_EMULATE_PREPARES => false,

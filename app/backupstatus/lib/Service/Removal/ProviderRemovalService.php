@@ -29,7 +29,7 @@ final class ProviderRemovalService implements RemoteRemovalInterface {
         try {
             $client = $this->clientService->newClient();
 
-            $response = $client->post(
+            $response = $client->request('POST',
                 rtrim($this->providerUrl, '/')
                     . '/api/v1/clients/'
                     . rawurlencode($this->clientId)

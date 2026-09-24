@@ -124,7 +124,7 @@
                 throw new Error('HTTP ' + response.status);
             }
             const data = await response.json();
-            apply(button, data.state || 'offline', data.label || t('backupstatus', 'Offline'));
+            apply(button, data.state || 'offline', t('backupstatus', data.label || 'Offline'));
         } catch (error) {
             apply(button, 'offline', t('backupstatus', 'Offline'));
         }

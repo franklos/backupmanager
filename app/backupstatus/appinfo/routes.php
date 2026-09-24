@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 return [
     'routes' => [
+        ['name' => 'providerAdmin#requests', 'url' => '/settings/provider-admin-requests', 'verb' => 'POST'],
+        ['name' => 'providerAdmin#action', 'url' => '/settings/provider-admin-action', 'verb' => 'POST'],
         ['name' => 'page#index', 'url' => '/', 'verb' => 'GET'],
         ['name' => 'status#check', 'url' => '/status', 'verb' => 'GET'],
         ['name' => 'page#dashboard', 'url' => '/dashboard', 'verb' => 'GET'],
@@ -16,6 +18,7 @@ return [
         ['name' => 'settings#testConnection', 'url' => '/settings/test', 'verb' => 'POST'],
         ['name' => 'settings#save', 'url' => '/settings', 'verb' => 'POST'],
         ['name' => 'settings#requestProvider', 'url' => '/settings/request-provider', 'verb' => 'POST'],
+        ['name' => 'settings#refreshProvider', 'url' => '/settings/refresh-provider', 'verb' => 'POST'],
         ['name' => 'settings#providerStatus', 'url' => '/settings/provider-status', 'verb' => 'POST'],
         ['name' => 'settings#managementClients', 'url' => '/settings/management-clients', 'verb' => 'GET'],
         ['name' => 'settings#managementClientAction', 'url' => '/settings/management-clients/{clientId}/{clientAction}', 'verb' => 'POST'],

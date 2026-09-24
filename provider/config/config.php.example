@@ -12,7 +12,8 @@ return [
 
 
     'storage' => [
-        'host' => 'localhost',
+        // Client-reachable SSH DNS name; configure before approving requests.
+        'host' => '',
         'port' => 22,
         'user' => 'backupstore',
         'root' => '/var/lib/backupmanager-provider',

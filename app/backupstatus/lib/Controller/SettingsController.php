@@ -23,6 +23,11 @@ final class SettingsController extends Controller {
     }
 
     private function reply(array $data): JSONResponse {
+        $data['error_message'] = \OCA\BackupStatus\Service\ErrorMessages::message($data);
+        if (($data['success'] ?? false) === false) {
+            $data['error_code'] ??= 'operation_failed';
+            error_log('Backup Manager settings request failed: ' . $data['error_code']);
+        }
         return new JSONResponse($data, ($data['success'] ?? false) ? 200 : 400);
     }
 
@@ -86,10 +91,32 @@ final class SettingsController extends Controller {
             'timeout' => 30, 'allow_redirects' => false, 'http_errors' => false];
         if ($token !== '') { $options['headers']['Authorization'] = 'Bearer ' . $token; }
         if ($method === 'post') { $options['body'] = json_encode($body); }
-        $response = $this->clientService->newClient()->$method($url . $path, $options);
-        $result = json_decode((string)$response->getBody(), true);
-        if ($response->getStatusCode() < 200 || $response->getStatusCode() >= 300 || !is_array($result) || !($result['success'] ?? false)) {
-            throw new \RuntimeException('Provider request failed; check provider administration and connectivity');
+        try {
+            $response = $this->clientService->newClient()->request(strtoupper($method), $url . $path, $options);
+        } catch (Throwable $error) {
+            // HTTP exception bodies and URLs can contain credentials; log metadata only.
+            error_log('Backup Manager provider transport failure: ' . get_class($error));
+            throw new \RuntimeException('Provider transport unavailable', 502);
+        }
+        $result = $this->providerJson($response);
+        return $result;
+    }
+
+    private function providerJson($response): array {
+        $status = $response->getStatusCode();
+        $type = strtolower(trim(explode(';', $response->getHeader('Content-Type'))[0]));
+        $body = (string)$response->getBody();
+        $result = json_decode($body, true);
+        if ($type !== 'application/json' || !is_array($result) || !is_bool($result['success'] ?? null)) {
+            // Log metadata only: a misrouted response can contain PHP source or secrets.
+            error_log('Backup Manager invalid provider response: HTTP=' . $status
+                . '; JSON-content-type=' . ($type === 'application/json' ? 'yes' : 'no')
+                . '; bytes=' . strlen($body) . '; JSON-envelope=' . (is_array($result) ? 'yes' : 'no'));
+            throw new \UnexpectedValueException('Invalid provider API response', 502);
+        }
+        if ($status < 200 || $status >= 300 || $result['success'] !== true) {
+            error_log('Backup Manager provider request rejected: HTTP=' . $status);
+            throw new \RuntimeException('Provider HTTP ' . $status, $status);
         }
         return $result;
     }
@@ -111,16 +138,25 @@ final class SettingsController extends Controller {
                 'source_id' => $info['source_id'], 'public_key' => $info['public_key'],
                 'restore_public_key' => $info['restore_public_key'], 'requester_email' => $email,
                 'source_url' => $this->request->getServerProtocol() . '://' . $this->request->getServerHost() . \OC::$WEBROOT . '/',
-                'client_version' => '0.2.0', 'nextcloud_version' => $this->serverVersion->getVersionString(),
+                'client_version' => '0.2.4', 'nextcloud_version' => $this->serverVersion->getVersionString(),
             ]);
+            if (!is_string($data['request_id'] ?? null) || !preg_match('/^REQ-[A-Za-z0-9-]+$/D', $data['request_id'])
+                || !is_string($data['request_token'] ?? null) || $data['request_token'] === ''
+                || ($data['status'] ?? null) !== 'pending') {
+                throw new \UnexpectedValueException('Invalid provider enrollment response', 502);
+            }
             foreach (['request_id', 'request_token'] as $field) {
                 $this->config->setAppValue('backupstatus', 'provider_' . $field, (string)$data[$field]);
             }
             $this->config->setAppValue('backupstatus', 'provider_request_status', 'pending');
             $notification = $this->notifyProvider((string)$data['request_id']);
             return $this->reply(['success' => true, 'status' => 'pending', 'notificationSent' => $notification]);
-        } catch (Throwable) {
-            return $this->reply(['success' => false, 'error' => 'Enrollment failed; verify configuration or check for a pending request at the provider']);
+        } catch (Throwable $error) {
+            $code = $error instanceof \UnexpectedValueException ? 'provider_invalid_response' : 'provider_unavailable';
+            $this->config->deleteAppValue('backupstatus', 'provider_request_id');
+            $this->config->setAppValue('backupstatus', 'provider_request_status', 'failed');
+            $this->config->setAppValue('backupstatus', 'provider_request_error', $code);
+            return $this->reply(['success' => false, 'error_code' => $code]);
         }
     }
 
@@ -146,11 +182,47 @@ final class SettingsController extends Controller {
     public function providerStatus(): JSONResponse { return $this->poll(false); }
     public function recoveryStatus(): JSONResponse { return $this->poll(true); }
 
+    public function refreshProvider(): JSONResponse {
+        $clientId = $this->config->getAppValue('backupstatus', 'provider_client_id', '');
+        $token = $this->config->getAppValue('backupstatus', 'provider_request_token', '');
+        if (!preg_match('/^BM-[0-9]{6}$/D', $clientId) || $token === ''
+            || $this->config->getAppValue('backupstatus', 'recovery_request_id', '') !== '') {
+            return $this->reply(['success' => false, 'error' => 'An activated provider client is required']);
+        }
+        try {
+            $result = $this->provider('get', '/api/v1/clients/' . $clientId . '/connection', [], $token);
+            $connection = $result['connection'] ?? [];
+            if (($connection['client_id'] ?? null) !== $clientId) {
+                throw new \UnexpectedValueException('Provider returned a different client', 502);
+            }
+            // Refresh only the assignment. Never replay recovery or activate staged keys.
+            $applied = $this->runtime->helper('apply-provider-config', array_intersect_key($connection,
+                array_flip(['client_id', 'host', 'port', 'user', 'path'])) + [
+                    'select_managed' => true, 'activate_recovery' => false]);
+            if (!($applied['success'] ?? false)) { return $this->reply($applied); }
+            $this->config->setAppValue('backupstatus', 'credential_mode', 'managed');
+            $this->config->setAppValue('backupstatus', 'destination_type', 'ssh');
+            return $this->reply(['success' => true, 'clientId' => $clientId, 'applied' => true]);
+        } catch (Throwable $error) {
+            return $this->reply(['success' => false, 'error_code' => $error instanceof \UnexpectedValueException
+                ? 'provider_invalid_response' : 'provider_status_failed']);
+        }
+    }
+
     private function poll(bool $recovery): JSONResponse {
         $prefix = $recovery ? 'recovery' : 'provider';
+        // Recovery supersedes onboarding. Never apply an old enrollment while
+        // replacement credentials are being requested or approved.
+        if (!$recovery && $this->config->getAppValue('backupstatus', 'recovery_request_id', '') !== '') {
+            return $this->reply(['success' => true, 'status' => 'stale']);
+        }
         $id = $this->config->getAppValue('backupstatus', $prefix . '_request_id', '');
         if ($id === '') {
             $status = $this->config->getAppValue('backupstatus', $prefix . '_request_status', 'none');
+            if ($status === 'failed') {
+                return $this->reply(['success' => false, 'status' => 'failed',
+                    'error_code' => $this->config->getAppValue('backupstatus', $prefix . '_request_error', 'recovery_request_failed')]);
+            }
             // A pending status without a request ID cannot be polled and is stale.
             if ($status === 'pending') {
                 $status = 'stale';
@@ -162,49 +234,106 @@ final class SettingsController extends Controller {
         $token = $this->config->getAppValue('backupstatus', $prefix . '_request_token', '');
         try {
             $result = $this->provider('get', '/api/v1/' . ($recovery ? 'recovery-requests/' : 'requests/') . rawurlencode($id), [], $token);
-            $status = (string)$result['status'];
+            // A newer request or completed recovery may have superseded this poll.
+            if ($this->config->getAppValue('backupstatus', $prefix . '_request_id', '') !== $id
+                || $this->config->getAppValue('backupstatus', $prefix . '_request_token', '') !== $token) {
+                return $this->reply(['success' => true,
+                    'status' => $this->config->getAppValue('backupstatus', $prefix . '_request_status', 'none'),
+                    'clientId' => $this->config->getAppValue('backupstatus', 'provider_client_id', '')]);
+            }
+            if (!$recovery && $this->config->getAppValue('backupstatus', 'recovery_request_id', '') !== '') {
+                return $this->reply(['success' => true, 'status' => 'stale']);
+            }
+            $responseId = $result[$recovery ? 'recovery_request_id' : 'request_id'] ?? null;
+            if ($responseId !== $id || !in_array($result['status'] ?? null, ['pending', 'approved', 'rejected', 'expired'], true)) {
+                throw new \UnexpectedValueException('Invalid provider status response', 502);
+            }
+            $status = $result['status'];
             if ($status === 'approved' && empty($result['connection'])) {
                 return $this->reply(['success' => false, 'error' => 'Approved request has no connection configuration']);
             }
             if ($status === 'approved') {
-                if ($recovery) {
-                    $activated = $this->runtime->helper('activate-recovery-key');
-                    if (!($activated['success'] ?? false)) { return $this->reply($activated); }
-                }
-                $applied = $this->runtime->helper('apply-provider-config', $result['connection']);
+                $connection = $result['connection'];
+                $connection['activate_recovery'] = $recovery;
+                $applied = $this->runtime->helper('apply-provider-config', $connection);
                 if (!($applied['success'] ?? false)) { return $this->reply($applied); }
                 $this->config->setAppValue('backupstatus', 'provider_client_id', (string)$result['connection']['client_id']);
                 $this->config->setAppValue('backupstatus', 'provider_request_token', $token);
+                if ($recovery) { $this->config->deleteAppValue('backupstatus', 'provider_request_id'); }
                 $this->config->setAppValue('backupstatus', 'provider_request_status', 'approved');
                 $this->config->setAppValue('backupstatus', 'credential_mode', 'managed');
                 $this->config->setAppValue('backupstatus', 'destination_type', 'ssh');
             }
             $this->config->setAppValue('backupstatus', $prefix . '_request_status', $status);
             if ($status !== 'pending') { $this->config->deleteAppValue('backupstatus', $prefix . '_request_id'); }
-            return $this->reply(['success' => true, 'status' => $status,
+            return $this->reply(['success' => true, 'status' => $status, 'applied' => $status === 'approved',
                 'clientId' => $this->config->getAppValue('backupstatus', 'provider_client_id', '')]);
-        } catch (Throwable) { return $this->reply(['success' => false, 'error' => 'Provider status unavailable']); }
+        } catch (Throwable $error) {
+            error_log('Backup Manager ' . $prefix . ' poll failed: ' . get_class($error) . '; code=' . $error->getCode());
+            return $this->reply(['success' => false, 'error_code' => $error instanceof \UnexpectedValueException ? 'provider_invalid_response' : 'provider_status_failed', 'error' => 'Provider status unavailable']);
+        }
     }
 
-    public function requestRecovery(string $clientId = '', string $providerUrl = ''): JSONResponse {
+    public function requestRecovery(string $clientId = '', string $providerUrl = '', string $consent = '0'): JSONResponse {
+        if ($consent !== '1') { return $this->reply(['success' => false, 'error_code' => 'consent_required', 'error' => 'Consent is required']); }
         if ($clientId === '') { $clientId = $this->config->getAppValue('backupstatus', 'provider_client_id', ''); }
-        if (!preg_match('/^BM-[0-9]{6}$/D', $clientId)) { return $this->reply(['success' => false, 'error' => 'Existing client ID required']); }
+        if (!preg_match('/^BM-[0-9]{6}$/D', $clientId)) { return $this->reply(['success' => false, 'error_code' => 'invalid_client_id', 'error' => 'Existing client ID required']); }
+        $previousProviderUrl = $this->config->getAppValue('backupstatus', 'provider_url', '');
         if ($providerUrl !== '') {
             if (!$this->validProviderUrl($providerUrl)) {
-                return $this->reply(['success' => false, 'error' => 'HTTPS provider URL required']);
+                return $this->reply(['success' => false, 'error_code' => 'provider_url_invalid', 'error' => 'HTTPS provider URL required']);
             }
             $this->config->setAppValue('backupstatus', 'provider_url', rtrim($providerUrl, '/'));
         }
+        $previous = null;
+        if ($this->config->getAppValue('backupstatus', 'recovery_request_validated', '') === '1'
+            && $previousProviderUrl === $this->config->getAppValue('backupstatus', 'provider_url', '')
+            && $clientId === $this->config->getAppValue('backupstatus', 'provider_client_id', '')) {
+            $previous = [$this->config->getAppValue('backupstatus', 'recovery_request_id', ''),
+                         $this->config->getAppValue('backupstatus', 'recovery_request_token', '')];
+        }
+        $this->config->deleteAppValue('backupstatus', 'recovery_request_validated');
+        // Retire obsolete local polling before submitting replacement keys. This does
+        // not cancel/delete any provider request or change the permanent client ID.
+        $this->config->deleteAppValue('backupstatus', 'recovery_request_id');
+        $this->config->deleteAppValue('backupstatus', 'recovery_request_token');
+        $this->config->deleteAppValue('backupstatus', 'provider_request_id');
+        $this->config->setAppValue('backupstatus', 'recovery_request_status', 'failed');
+        $this->config->setAppValue('backupstatus', 'recovery_request_error', 'recovery_request_failed');
         try {
             $info = $this->runtime->helper('recovery-request-info');
             if (!($info['success'] ?? false)) { return $this->reply($info); }
             $result = $this->provider('post', '/api/v1/recovery-requests', ['client_id' => $clientId,
                 'source_id' => $info['source_id'], 'public_key' => $info['public_key'], 'restore_public_key' => $info['restore_public_key']]);
+            if (($result['status'] ?? null) !== 'pending' || !is_string($result['recovery_request_id'] ?? null) || !preg_match('/^REC-[A-Za-z0-9-]+$/D', $result['recovery_request_id'])
+                || !is_string($result['request_token'] ?? null) || $result['request_token'] === '') {
+                throw new \UnexpectedValueException('Incomplete provider recovery response', 502);
+            }
             $this->config->setAppValue('backupstatus', 'recovery_request_id', (string)$result['recovery_request_id']);
             $this->config->setAppValue('backupstatus', 'recovery_request_token', (string)$result['request_token']);
             $this->config->setAppValue('backupstatus', 'recovery_request_status', 'pending');
-            return $this->reply(['success' => true, 'status' => 'pending']);
-        } catch (Throwable) { return $this->reply(['success' => false, 'error' => 'Recovery request failed; check pending requests at the provider']); }
+            $this->config->deleteAppValue('backupstatus', 'recovery_request_error');
+            $this->config->setAppValue('backupstatus', 'recovery_request_validated', '1');
+            return $this->reply(['success' => true, 'status' => 'pending', 'requestId' => $result['recovery_request_id']]);
+        } catch (Throwable $error) {
+            $code = $error instanceof \UnexpectedValueException ? 'provider_invalid_response' : match ((int)$error->getCode()) {
+                400 => 'provider_invalid_request', 409 => 'recovery_pending', 429 => 'provider_rate_limited', 403 => 'provider_forbidden',
+                404 => 'provider_not_found', 502, 503 => 'provider_unavailable', default => 'recovery_request_failed',
+            };
+            if ($code === 'recovery_pending' && $previous !== null && $previous[0] !== '' && $previous[1] !== '') {
+                // A duplicate submission must not orphan a request whose credentials
+                // this client already received in a validated JSON response.
+                $this->config->setAppValue('backupstatus', 'recovery_request_id', $previous[0]);
+                $this->config->setAppValue('backupstatus', 'recovery_request_token', $previous[1]);
+                $this->config->setAppValue('backupstatus', 'recovery_request_status', 'pending');
+                $this->config->setAppValue('backupstatus', 'recovery_request_validated', '1');
+            }
+            $this->config->setAppValue('backupstatus', 'recovery_request_error', $code);
+            error_log('Backup Manager recovery submission failed: ' . $code . '; exception=' . get_class($error) . '; HTTP=' . $error->getCode());
+            return $this->reply(['success' => false, 'error_code' => $code,
+                'error_detail' => 'Recovery submission; HTTP=' . (int)$error->getCode(),
+                'error' => 'Recovery request failed']);
+        }
     }
 
     public function removeBackupManager(string $removeLocal = '0', string $removeRemote = '0', string $confirm = ''): JSONResponse {
@@ -261,7 +390,7 @@ final class SettingsController extends Controller {
         try {
             $client = $this->clientService->newClient();
 
-            $response = $client->get(
+            $response = $client->request('GET',
                 $providerUrl . "/api/v1/management/clients",
                 [
                     "headers" => [
@@ -281,13 +410,10 @@ final class SettingsController extends Controller {
                 ], 502);
             }
 
-            $data = json_decode((string)$response->getBody(), true);
+            $data = $this->providerJson($response);
 
-            if (!is_array($data) || !($data["success"] ?? false)) {
-                return new JSONResponse([
-                    "success" => false,
-                    "error" => "Invalid provider response",
-                ], 502);
+            if (!is_array($data['clients'] ?? null)) {
+                throw new \UnexpectedValueException('Invalid provider clients response', 502);
             }
 
             return new JSONResponse([
@@ -295,10 +421,8 @@ final class SettingsController extends Controller {
                 "clients" => $data["clients"] ?? [],
             ]);
         } catch (\Throwable $e) {
-            return new JSONResponse([
-                "success" => false,
-                "error" => "Provider unavailable",
-            ], 502);
+            return $this->reply(['success' => false, 'error_code' => $e instanceof \UnexpectedValueException
+                ? 'provider_invalid_response' : 'provider_unavailable']);
         }
     }
 
@@ -354,16 +478,16 @@ final class SettingsController extends Controller {
             ];
 
             if ($clientAction === "delete") {
-                $response = $client->delete($url, $options);
+                $response = $client->request('DELETE', $url, $options);
             } else {
-                $response = $client->post(
+                $response = $client->request('POST',
                     $url . "/" . rawurlencode($clientAction),
                     $options
                 );
             }
 
             $statusCode = $response->getStatusCode();
-            $data = json_decode((string)$response->getBody(), true);
+            $data = $this->providerJson($response);
 
             if (
                 $statusCode < 200
@@ -380,10 +504,8 @@ final class SettingsController extends Controller {
 
             return new JSONResponse($data);
         } catch (Throwable $e) {
-            return new JSONResponse([
-                "success" => false,
-                "error" => "Provider unavailable",
-            ], 502);
+            return $this->reply(['success' => false, 'error_code' => $e instanceof \UnexpectedValueException
+                ? 'provider_invalid_response' : 'provider_unavailable']);
         }
     }
 

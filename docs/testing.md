@@ -22,6 +22,23 @@ key restrictions, traversal rejection, inventory and deletion without an SSH ser
 No production configuration or existing database is read. If binaries are missing,
 the test is explicitly skipped rather than replaced with a live database.
 
+## Online-backup regressions
+
+Run the focused runtime and failure tests from the repository root:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=tests:runtime python3 -m unittest test_runtime test_failures -v
+```
+
+These tests use temporary directories and in-memory storage. They cover successful
+backup, dump/archive/upload failures, interruption cleanup, preservation of an
+already-enabled maintenance state, and unchanged restore maintenance handling.
+The large-backup regression archives more than 64 MiB of incompressible fixture
+data to exercise the actual multi-chunk path and verifies artifact integrity while
+asserting that no maintenance command is issued. It needs a few hundred MiB of
+available memory and temporary disk space. Tests do not establish atomic consistency
+between an actively changing database and filesystem.
+
 ## Required staging acceptance before deployment
 
 Automated fixtures do not replace a real Nextcloud 34 restore exercise or certify
@@ -45,3 +62,14 @@ your SSH/S3 provider's behavior. On an isolated machine with synthetic data:
    removal modes and remote deletion retry.
 
 Do not execute these acceptance steps against the running host used for development.
+
+
+Provider administration regressions include Nextcloud administrator/CSRF rejection,
+server-side token non-disclosure, malformed/HTML-200 API replies, UTC expiry,
+canonical configuration preservation and port validation, real standalone session
+login/rotation, and exact rollback of legacy authorization lines. The continuous
+legacy fixture now approves through Nextcloud's management controller and HTTPS
+provider API; with `BM_BROWSER_TESTS=1` it uses actual admin templates/JS for
+management, rejection and approval in Dutch/English and desktop/narrow layouts.
+It then activates the same recovery request, tests both SSH keys, creates/discovers
+a generation and performs an isolated restore. No live request is used.

@@ -10,7 +10,8 @@ namespace OCA\BackupStatus\Service {
     }
 }
 namespace {
-    require dirname(__DIR__) . '/app/backupstatus/lib/Service/RuntimeService.php';
+    require_once dirname(__DIR__) . '/app/backupstatus/lib/Service/ErrorMessages.php';
+require dirname(__DIR__) . '/app/backupstatus/lib/Service/RuntimeService.php';
     $log = tempnam(sys_get_temp_dir(), 'bm-log-');
     ini_set('error_log', $log);
     try {

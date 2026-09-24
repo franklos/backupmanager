@@ -15,7 +15,7 @@ from pathlib import Path
 SOURCE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SOURCE / 'runtime'))
 from backupmanager.config import DEFAULTS, atomic_json, legacy, validate
-from backupmanager.phpconfig import parse
+from backupmanager.phpconfig import read_config, data_directory, check_data_directory
 
 
 def run(args):
@@ -28,9 +28,37 @@ def main():
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--destdir', type=Path, help='Stage files only; no users, services, keys or database operations')
     mode.add_argument('--apply', action='store_true', help='Deploy to this machine (operator action)')
+    mode.add_argument('--check-web', action='store_true', help='Read-only provider web-root and dedicated PHP-FPM configuration checks')
+    mode.add_argument('--detect-fpm', action='store_true', help='Read-only PHP-FPM discovery; print selected paths/service as JSON')
+    parser.add_argument('--php-fpm-version', help='Explicit FPM version for ambiguous installations; never inferred from CLI PHP')
     parser.add_argument('--nextcloud-root', default=DEFAULTS['nc_path'])
-    parser.add_argument('--migrate', action='store_true', help='Explicitly migrate configured provider database')
+    parser.add_argument('--migrate', action='store_true', help='Explicitly apply pending migrations using configured runtime credentials; inspect with migrate.php --check first')
+    parser.add_argument('--migration-credentials', type=Path, help='Private JSON credentials for a deployment database account; requires --migrate')
     args = parser.parse_args()
+    if args.php_fpm_version and (args.component != 'provider' or args.destdir):
+        parser.error('--php-fpm-version requires provider --detect-fpm, --check-web or --apply')
+    if args.detect_fpm:
+        if args.component != 'provider' or args.migrate or args.migration_credentials:
+            parser.error('--detect-fpm is a standalone read-only provider check')
+        from web_check import detect_fpm
+        try:
+            print(json.dumps(detect_fpm(version=args.php_fpm_version)))
+        except ValueError as error:
+            print(str(error), file=sys.stderr)
+            return 2
+        return 0
+    if args.check_web:
+        if args.component != 'provider' or args.migrate or args.migration_credentials:
+            parser.error('--check-web is a standalone read-only provider check')
+        from web_check import web_errors
+        errors = web_errors(version=args.php_fpm_version)
+        for error in errors:
+            print('Provider web deployment incomplete: ' + error)
+        if not errors:
+            print('Provider web configuration points at the installed code and dedicated PHP-FPM pool. Validate/reload the web server and FPM separately.')
+        return 2 if errors else 0
+    if args.migration_credentials and not args.migrate:
+        parser.error('--migration-credentials requires --migrate')
     if args.migrate and (not args.apply or args.component != 'provider'):
         parser.error('--migrate requires provider --apply')
     if args.apply and os.geteuid() != 0:
@@ -71,6 +99,13 @@ def main():
             os.replace(temporary, target)
         installed.append(destination)
 
+    if args.apply and args.component == 'provider':
+        from web_check import detect_fpm
+        try:
+            detect_fpm(version=args.php_fpm_version)
+        except ValueError as error:
+            print(str(error), file=sys.stderr)
+            return 2
     if args.apply:
         dependencies = ['python3', 'php', 'sudo', 'systemctl', 'visudo', 'ssh-keygen', 'rsync']
         dependencies += ['mysqldump', 'mysql'] if args.component == 'client' else ['rrsync']
@@ -127,10 +162,12 @@ def main():
                     cfg['timezone'] = match[3]
             cfg['nc_path'] = args.nextcloud_root
             if args.apply:
-                nc = parse((Path(args.nextcloud_root) / 'config/config.php').read_text())
-                cfg['data_path'] = str(nc.get('datadirectory', cfg['data_path']))
+                nc = read_config(args.nextcloud_root)
+                cfg['data_path'] = data_directory(nc)
             atomic_json(settings, validate(cfg))
         cfg = validate(json.loads(settings.read_text()))
+        if args.apply:
+            check_data_directory(read_config(cfg['nc_path']), cfg['data_path'])
         dirs = {'/etc/backupmanager': 0o750, cfg['runtime']: 0o711,
                 cfg['runtime'] + '/status': 0o755, cfg['runtime'] + '/jobs': 0o700,
                 cfg['runtime'] + '/transfer': 0o711, cfg['runtime'] + '/.ssh': 0o700}
@@ -154,14 +191,8 @@ def main():
             for directory in dirs:
                 os.chown(directory, 0, 0)
             os.chown('/etc/backupmanager', 0, grp.getgrnam('www-data').gr_gid)
-            for key_name in ('ssh_key', 'ssh_read_key'):
-                key = Path(cfg[key_name])
-                if key.is_symlink():
-                    raise ValueError('Symlink private key refused')
-                if not key.exists():
-                    run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(key)])
-                os.chown(key, account.pw_uid, account.pw_gid)
-                key.chmod(0o600)
+            from backupmanager.client_helpers import ensure_keys
+            ensure_keys(cfg)
             # Root owns the directory and host-trust file; backupmgr can read keys, not change trust.
             os.chown(path(cfg['runtime'] + '/.ssh'), 0, account.pw_gid)
             path(cfg['runtime'] + '/.ssh').chmod(0o750)
@@ -174,6 +205,7 @@ def main():
             for source in (SOURCE / 'provider' / directory).rglob('*'):
                 if source.is_file():
                     copy(source, '/opt/backupmanager-provider/' + str(source.relative_to(SOURCE / 'provider')))
+        copy(SOURCE / 'provider/VERSION', '/opt/backupmanager-provider/VERSION')
         copy(SOURCE / 'provider/config/config.php.example', '/etc/backupmanager-provider/config.php', 0o640, preserve=True)
         for source in (SOURCE / 'provider/system').iterdir():
             copy(source, '/usr/local/sbin/' + source.name, 0o755)
@@ -189,6 +221,7 @@ def main():
             'backupmanager-remove-authorized-key', 'backupmanager-remove-storage', 'backupmanager-storage-usage'])
         text('/etc/sudoers.d/backupmanager-provider', sudo, 0o440)
         copy(SOURCE / 'provider/config/nginx.conf.example', '/opt/backupmanager-provider/nginx.conf.example')
+        copy(SOURCE / 'provider/config/apache.conf.example', '/opt/backupmanager-provider/apache.conf.example')
         copy(SOURCE / 'provider/config/php-fpm.conf.example', '/opt/backupmanager-provider/php-fpm.conf.example')
         if args.apply:
             account = pwd.getpwnam('bmprovider')
@@ -199,8 +232,8 @@ def main():
             for file in ('/etc/backupmanager-provider', '/etc/backupmanager-provider/config.php'):
                 os.chown(file, 0, account.pw_gid)
             run(['visudo', '-cf', '/etc/sudoers.d/backupmanager-provider'])
-            if args.migrate:
-                run(['runuser', '-u', 'bmprovider', '--', 'php', '/opt/backupmanager-provider/bin/migrate.php'])
+            if not args.migrate:
+                print('Database not migrated. Inspect pending changes: sudo -u bmprovider php /opt/backupmanager-provider/bin/migrate.php --check')
             print('Provider files installed. Complete dedicated FPM/HTTPS, database and administrator setup in docs/operations.md.')
     for obsolete in ('/usr/local/sbin/backupmanager-provision-storage', '/usr/local/sbin/backupmanager-install-restore-key'):
         path(obsolete).unlink(missing_ok=True)
@@ -210,8 +243,23 @@ def main():
     manifest.parent.mkdir(parents=True, exist_ok=True)
     previous = json.loads(manifest.read_text()) if manifest.exists() else []
     atomic_json(manifest, sorted(set(previous + installed)), 0o644)
+    # Record deployed files before an optional database operation can fail.
+    if args.component == 'provider' and args.migrate:
+        migration = ['php', '/opt/backupmanager-provider/bin/migrate.php']
+        if args.migration_credentials:
+            run(migration + ['--credentials', str(args.migration_credentials.resolve())])
+        else:
+            run(['runuser', '-u', 'bmprovider', '--'] + migration)
+    if args.apply and args.component == 'provider':
+        from web_check import web_errors
+        errors = web_errors(version=args.php_fpm_version)
+        if errors:
+            for error in errors:
+                print('Provider web deployment incomplete: ' + error, file=sys.stderr)
+            print('Provider files were installed, but HTTP service is not ready. See docs/upgrading.md. No web-server or FPM configuration was changed.', file=sys.stderr)
+            return 2
     print('Staged ' + args.component + ' files.' if args.destdir else 'Deployment finished.')
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

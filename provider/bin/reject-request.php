@@ -41,8 +41,10 @@ if ($rejectedBy === '') {
     fail('rejected_by is required');
 }
 
+if (!preg_match('/^REQ-[0-9]{8}-[A-F0-9]{6}$/D', $requestId)) { fail('Invalid request type or ID'); }
+
 try {
-    $config = new Config(dirname(__DIR__) . '/config/config.php');
+    $config = new Config();
     $database = new Database($config);
     $pdo = $database->pdo();
 
@@ -69,6 +71,10 @@ try {
         throw new RuntimeException(
             'Request is not pending; current status: ' . $request['status']
         );
+    }
+
+    if (empty($request['expires_at']) || strtotime($request['expires_at'] . ' UTC') <= time()) {
+        throw new RuntimeException('Request has expired');
     }
 
     $reject = $pdo->prepare(

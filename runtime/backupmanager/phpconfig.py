@@ -114,3 +114,31 @@ def render(value):
             raise ValueError('Non-finite PHP number')
         return repr(value)
     raise ValueError('Unsupported configuration value')
+
+
+def read_config(nc_path):
+    """Read the literal effective config, including Nextcloud config fragments."""
+    from pathlib import Path
+    directory = Path(nc_path) / 'config'
+    if directory.is_symlink():
+        raise ValueError('Symlink configuration refused')
+    result = {}
+    for file in [directory / 'config.php', *sorted(directory.glob('*.config.php'))]:
+        if file.is_symlink():
+            raise ValueError('Symlink configuration refused')
+        result.update(parse(file.read_text()))
+    return result
+
+
+def data_directory(config):
+    from pathlib import Path
+    value = config.get('datadirectory')
+    if not isinstance(value, str) or not Path(value).is_absolute() or '..' in Path(value).parts or Path(value) == Path('/'):
+        raise ValueError('Nextcloud must define a valid absolute datadirectory')
+    return value
+
+
+def check_data_directory(config, stored):
+    from pathlib import Path
+    if Path(data_directory(config)).resolve() != Path(stored).resolve():
+        raise ValueError('Configured data directory does not match active Nextcloud datadirectory; have the server administrator reconcile runtime.json before retrying')

@@ -27,12 +27,14 @@ try {
     if (($_SERVER['HTTPS'] ?? '') !== 'on') {
         Response::json(['success' => false, 'error' => 'HTTPS is required'], 403);
     }
-    $config = new Config(dirname(__DIR__) . '/config/config.php');
+    $config = new Config();
     $database = new Database($config);
 
     header('Cache-Control: no-store');
     $requestController = new RequestController($database, $config);
     $router = new Router();
+    $router->add('GET', '#^/api/v1/clients/(BM-[0-9]{6})/connection/?$#',
+        [$requestController, 'clientConnection']);
 
     $router->add(
         'POST',
@@ -95,6 +97,10 @@ try {
         [$requestController, 'recoveryStatus']
     );
 
+    $management = new \BackupManager\Provider\Controller\ManagementController($database, $config);
+    $router->add('GET', '#^/api/v1/management/requests/?$#', [$management, 'requests']);
+    $router->add('POST', '#^/api/v1/management/requests/(enrollment|recovery)/((?:REQ|REC)-[0-9]{8}-[A-F0-9]{6})/(approve|reject)/?$#', [$management, 'action']);
+
     $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
 
     if (!is_string($path)) {
@@ -112,6 +118,7 @@ try {
         $path
     );
 } catch (Throwable $e) {
+    error_log('Backup Manager provider endpoint failed: ' . get_class($e) . '; code=' . $e->getCode());
     Response::json([
         'success' => false,
         'error' => 'Provider unavailable',

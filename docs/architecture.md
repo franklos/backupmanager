@@ -10,7 +10,7 @@
   arrays without invoking PHP; `storage.py` implements the common storage contract;
   `engine.py` coordinates consistent snapshots and verified restoration.
 - `service`: fixed root entry points, systemd scheduling and asynchronous job units.
-- `provider`: standalone PHP API, authenticated administration, MySQL/MariaDB state,
+- `provider`: PHP API, server-to-server management and emergency session administration, MySQL/MariaDB state,
   and root helpers scoped to one validated `BM-000001` client directory.
 - `installer`: explicit deployment or filesystem-only staging, with installation
   manifests for removal and an introspecting, non-destructive SQL migration runner.
@@ -64,11 +64,23 @@ at most 64 MiB objects named `data.000000`, `database.000000`, and `config.00000
 chunk sizes and SHA-256 checksums. It is uploaded last. Incomplete uploads are not
 listed as recovery points and are removed after the retention interval.
 
-Nextcloud maintenance mode spans the database dump and full local-data snapshot.
-Uploads happen after maintenance is turned off. Stop external writers, overlapping
-Nextcloud cron workers and other software that can modify the data/database outside
-maintenance mode during the backup window. A local flock prevents this runtime's
-backup and restore operations from overlapping.
+Normal backups never enable or disable Nextcloud maintenance mode, including for
+large, multi-chunk backups and failure cleanup. The existing capture order remains:
+read effective configuration, take a single-transaction database dump, archive local
+data, then serialize the captured configuration. Artifacts use the same staging,
+chunking, checksums and manifest-last upload as before. A local flock prevents this
+runtime's backup and restore operations from overlapping. Backups still refuse to
+start if Nextcloud is already in maintenance mode, leaving that state unchanged.
+
+The transaction gives a consistent database view for transactional tables; the live
+file archive and configuration are not an atomic snapshot with that database view.
+Concurrent uploads, edits, deletions or configuration changes can produce mismatches,
+and checksums verify artifact integrity rather than application-level consistency.
+Prefer quiet periods and avoid configuration changes during capture. Deployments
+requiring a coordinated point-in-time snapshot must arrange writer coordination or
+an application-consistent snapshot outside this backup mechanism. There is no
+size-dependent maintenance fallback. Live restores retain their maintenance-mode
+handling, including leaving maintenance enabled after a failed live restore.
 
 The manifest provides corruption detection, not authentication against a malicious
 storage administrator who can replace both data and manifest. Transport uses pinned
@@ -90,3 +102,15 @@ changes. Systemd failure finalizers turn interrupted jobs into failed status.
 SSH/S3 retention and deletion are scoped to the selected installation; the newest
 committed point is retained. S3 versioned deletion includes historical versions
 and delete markers, subject to bucket policy/Object Lock.
+
+
+## Provider management boundary
+
+The normal provider administration UI is part of Nextcloud Backupbeheer.
+`ProviderAdminController` enforces administrator membership and CSRF, reads its
+private server-side management token, validates HTTPS API replies, and exposes
+only allowlisted request metadata. `ManagementController` authenticates that token
+before calling the shared `RequestAdministration` inventory/action service.
+Standalone `/admin/` calls the same service after its own secure administrator
+session check; Apache Basic Auth is redundant and is not part of this model.
+See [security](security.md) and the [administration report](provider-administration.md).

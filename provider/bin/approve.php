@@ -41,8 +41,10 @@ if ($approvedBy === '') {
     fail('approved_by is required');
 }
 
+if (!preg_match('/^REQ-[0-9]{8}-[A-F0-9]{6}$/D', $requestId)) { fail('Invalid request type or ID'); }
+
 try {
-    $config = new Config(dirname(__DIR__) . '/config/config.php');
+    $config = new Config();
     $database = new Database($config);
     $pdo = $database->pdo();
 
@@ -79,8 +81,8 @@ try {
     }
 
     if (
-        !empty($request['expires_at'])
-        && strtotime((string)$request['expires_at']) < time()
+        empty($request['expires_at'])
+        || strtotime((string)$request['expires_at'] . ' UTC') <= time()
     ) {
         $expire = $pdo->prepare(
             'UPDATE provider_requests
@@ -123,6 +125,8 @@ try {
 
         fail('Request has expired');
     }
+
+    \BackupManager\Provider\StorageEndpoint::configured($config);
 
     /*
      * Hergebruik een bestaande client voor dezelfde bron.
@@ -320,9 +324,9 @@ try {
         );
 
         $storageUpdate->execute([
-            'storage_host' => $config->get('storage', 'host', 'localhost'),
+            'storage_host' => $config->get('storage', 'host', ''),
             'storage_port' => (int)$config->get('storage', 'port', 22),
-            'storage_user' => $config->get('storage', 'user', 'backupmanager'),
+            'storage_user' => $config->get('storage', 'user', 'backupstore'),
             'storage_path' => $storagePath,
             'id' => $storage['id'],
         ]);
@@ -349,9 +353,9 @@ try {
 
         $storageInsert->execute([
             'client_id' => $clientId,
-            'storage_host' => $config->get('storage', 'host', 'localhost'),
+            'storage_host' => $config->get('storage', 'host', ''),
             'storage_port' => (int)$config->get('storage', 'port', 22),
-            'storage_user' => $config->get('storage', 'user', 'backupmanager'),
+            'storage_user' => $config->get('storage', 'user', 'backupstore'),
             'storage_path' => $storagePath,
         ]);
     }
@@ -397,14 +401,17 @@ try {
         ], JSON_UNESCAPED_SLASHES),
     ]);
 
-    $provisionedClient = $clientId;
-    \BackupManager\Provider\Provisioning::install($clientId, (string)$request['public_key'], (string)$request['restore_public_key']);
+    $rotation = bin2hex(random_bytes(32));
+    \BackupManager\Provider\Provisioning::install($clientId, (string)$request['public_key'], (string)$request['restore_public_key'], false, $rotation);
     $credentials = $pdo->prepare('UPDATE clients SET api_token_hash = :token WHERE client_id = :client');
     $credentials->execute(['token' => $request['request_token_hash'], 'client' => $clientId]);
     $readKey = $pdo->prepare('UPDATE ssh_keys SET restore_public_key = :key WHERE client_id = :client AND status = "active"');
     $readKey->execute(['key' => $request['restore_public_key'], 'client' => $clientId]);
 
     $pdo->commit();
+    $committed = true;
+    try { \BackupManager\Provider\Provisioning::finish($clientId, $rotation, 'commit'); }
+    catch (Throwable) { error_log('Backup Manager credential transaction committed in DB but journal finalization needs operator reconciliation: ' . $clientId); }
 
     echo "APPROVED\n";
     echo "Request ID : {$requestId}\n";
@@ -414,9 +421,9 @@ try {
     echo "Fingerprint: {$request['ssh_fingerprint']}\n";
 
 } catch (Throwable $e) {
-    if (isset($provisionedClient)) {
-        exec('sudo -n /usr/local/sbin/backupmanager-remove-authorized-key ' . escapeshellarg($provisionedClient), $cleanupOutput, $cleanupCode);
-        // Never retain a newly issued key after a failed approval transaction.
+    if (isset($rotation) && empty($committed)) {
+        try { \BackupManager\Provider\Provisioning::finish($clientId, $rotation, 'rollback'); }
+        catch (Throwable) { error_log('Backup Manager credential rollback requires operator reconciliation: ' . $clientId); }
     }
     if (isset($pdo) && $pdo instanceof PDO && $pdo->inTransaction()) {
         $pdo->rollBack();

@@ -1,0 +1,29 @@
+# Merge these directives into the existing provider HTTPS VirtualHost.
+# Preserve its ServerName, TLS certificate configuration and logs.
+# /admin/ uses Backup Manager's HTTPS administrator session. Do not add Basic Auth.
+# Required: a2enmod proxy proxy_fcgi setenvif; validate Apache before reload.
+DocumentRoot /opt/backupmanager-provider/public
+LimitRequestBody 32768
+SetEnvIf Authorization "(.+)" HTTP_AUTHORIZATION=$1
+<Directory /opt/backupmanager-provider/public>
+    <IfModule proxy_fcgi_module>
+        Require all granted
+    </IfModule>
+    # Never serve PHP source if the FastCGI handler module is missing.
+    <IfModule !proxy_fcgi_module>
+        Require all denied
+    </IfModule>
+    AllowOverride None
+    Options -Indexes -ExecCGI
+    DirectoryIndex index.php
+    FallbackResource /index.php
+    <FilesMatch "^index\.php$">
+        <IfModule !proxy_fcgi_module>
+            Require all denied
+        </IfModule>
+        SetHandler "proxy:unix:/run/php/backupmanager-provider.sock|fcgi://localhost"
+    </FilesMatch>
+    <FilesMatch "^(?!index\.php$).*\.php$">
+        Require all denied
+    </FilesMatch>
+</Directory>

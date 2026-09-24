@@ -10,9 +10,10 @@ import sys
 import uuid
 from pathlib import Path
 
-from .config import PUBLIC, atomic_json, load, validate
+from .config import AWS_REGIONS, DEFAULTS, PUBLIC, atomic_json, load, validate, s3_endpoint, validate_s3_credentials, SSH_FIELDS, PROFILE_FIELDS, profile_name, remember_storage, public_profiles
 from .engine import Engine, lock, utcnow
 from .storage import GENERATION, backend
+from .errors import Failure, failure_info, log_failure
 
 class JobCancelled(RuntimeError):
     pass
@@ -43,7 +44,7 @@ def payload():
 
 
 def host_status(cfg):
-    result = {'host_trusted': False, 'host_key': '', 'host_fingerprint': '', 'host_error': ''}
+    result = {'host_trusted': False, 'host_key': '', 'host_fingerprint': '', 'host_error': '', 'host_error_code': ''}
     file = Path(cfg['known_hosts'])
     if not cfg['ssh_host'] or not file.is_file() or file.is_symlink():
         return result
@@ -69,14 +70,22 @@ def host_status(cfg):
     if state.exists():
         previous = json.loads(state.read_text())
         if previous.get('identity') == host_identity(cfg) and previous.get('error'):
-            result.update(host_trusted=False, host_error=previous['error'])
+            result.update(host_trusted=False, host_error=previous['error'], host_error_code=previous.get('error_code', 'ssh_host_verification'))
     return result
 
 
 def host_identity(cfg):
-    return hashlib.sha256(json.dumps([cfg[k] for k in
+    digest = hashlib.sha256(json.dumps([cfg[k] for k in
         ('ssh_host', 'ssh_port', 'ssh_user', 'ssh_path', 'ssh_read_key', 'known_hosts')]).encode()
-        + Path(cfg['known_hosts']).read_bytes()).hexdigest()
+        + Path(cfg['known_hosts']).read_bytes())
+    # A recovery rotates the read key in place. A result for the old credential
+    # must not remain attached to the replacement merely because its path matches.
+    try:
+        with open(cfg['ssh_read_key'], 'rb') as stream:
+            digest.update(stream.read(65537))
+    except OSError:
+        digest.update(b'unavailable-read-key')
+    return digest.hexdigest()
 
 
 def host_trusted(cfg):
@@ -97,9 +106,11 @@ def verify_host(cfg):
             storage.rsync(['--list-only', storage.remote('')], read=True, timeout=25)
         except Exception as failure:
             print('Backup Manager host verification: ' + type(failure).__name__ + ': ' + str(failure), file=sys.stderr)
-            error = 'SSH host verification failed; check the pinned key, access and connectivity. See the server log.'
-            atomic_json(state, {'identity': identity, 'error': error})
-            raise RuntimeError(error) from None
+            cause = failure_info(failure)
+            if cause['error_code'] == 'operation_failed':
+                cause = failure_info(Failure('ssh_host_verification'))
+            atomic_json(state, {'identity': identity, **cause})
+            raise Failure(cause['error_code']) from None
         atomic_json(state, {'identity': identity, 'error': ''})
         return {'settings': host_status(cfg)}
 
@@ -126,20 +137,43 @@ def apply_schedule(cfg):
 def save(cfg, data):
     if set(data) - WEB_SETTINGS - {'s3_access_key', 's3_secret_key', 's3_session_token'}:
         raise ValueError('Unsupported settings')
-    updated = validate(cfg | {k: v for k, v in data.items() if k in WEB_SETTINGS})
+    selected = cfg | {k: v for k, v in data.items() if k in WEB_SETTINGS}
+    managed = selected['destination'] == 'ssh' and selected['credential_mode'] == 'managed'
+    # Ignore inactive controls even for direct API callers.
+    allowed = WEB_SETTINGS.copy()
+    if selected['destination'] != 'ssh' or managed:
+        allowed -= SSH_FIELDS
+    if selected['destination'] != 'ssh':
+        allowed.discard('credential_mode')
+    if selected['destination'] == 'ssh':
+        allowed -= {k for k in WEB_SETTINGS if k.startswith('s3_')}
+        data = {k: v for k, v in data.items() if not k.startswith('s3_')}
+    elif selected['destination'] == 'aws_s3':
+        allowed.discard('s3_endpoint')
     with lock(cfg['runtime']):
-        if updated['s3_endpoint'] != cfg['s3_endpoint'] and Path(cfg['s3_credentials']).exists() and not data.get('s3_secret_key'):
+        profiles = remember_storage(cfg)['storage_profiles']
+        target = profile_name(selected)
+        baseline = cfg
+        if target != profile_name(cfg):
+            if target in profiles:
+                baseline = cfg | profiles[target]
+            elif target.startswith('ssh_'):
+                baseline = cfg | {key: DEFAULTS[key] for key in PROFILE_FIELDS[target]}
+        updated = validate(baseline | {k: v for k, v in data.items() if k in allowed})
+        reference = baseline | {'destination': selected['destination']} if target in profiles else cfg
+        if updated['destination'] != 'ssh' and s3_endpoint(updated) != s3_endpoint(reference) and Path(updated['s3_credentials']).exists() and not data.get('s3_secret_key'):
             raise ValueError('Supply new credentials when changing the S3 endpoint')
+        if data.get('s3_session_token') and not (data.get('s3_access_key') and data.get('s3_secret_key')):
+            raise ValueError('Supply access key and secret key when replacing a session token')
         new_credentials = None
         if data.get('s3_access_key') or data.get('s3_secret_key'):
             if not data.get('s3_access_key') or not data.get('s3_secret_key'):
                 raise ValueError('Supply both S3 credential fields, or leave both blank')
-            secrets = {k: data.get('s3_' + k, '') for k in ('access_key', 'secret_key', 'session_token')}
-            if any(not isinstance(v, str) or '\n' in v or '\r' in v for v in secrets.values()):
-                raise ValueError('Invalid credential format')
-            new_credentials = Path(cfg['s3_credentials']).parent / ('.s3-credentials-' + uuid.uuid4().hex + '.json')
+            secrets = validate_s3_credentials({k: data.get('s3_' + k, '') for k in ('access_key', 'secret_key', 'session_token')})
+            new_credentials = Path(updated['s3_credentials']).parent / ('.s3-credentials-' + uuid.uuid4().hex + '.json')
             atomic_json(new_credentials, secrets)
             updated['s3_credentials'] = str(new_credentials)
+        updated = remember_storage(updated | {'storage_profiles': profiles})
         try:
             # The config pointer and its new private credential file become visible together.
             apply_schedule(updated)
@@ -152,8 +186,9 @@ def save(cfg, data):
             except Exception:
                 pass  # Report failure; never publish mismatched credentials/configuration.
             raise RuntimeError('Settings could not be applied; review the system timer') from None
-        previous = Path(cfg['s3_credentials'])
-        if new_credentials is not None and previous.parent == new_credentials.parent and re.fullmatch(r'\.s3-credentials-[a-f0-9]{32}\.json', previous.name):
+        previous = Path(baseline['s3_credentials'])
+        retained = {profile.get('s3_credentials') for profile in updated['storage_profiles'].values()}
+        if new_credentials is not None and str(previous) not in retained and previous.parent == new_credentials.parent and re.fullmatch(r'\.s3-credentials-[a-f0-9]{32}\.json', previous.name):
             previous.unlink(missing_ok=True)
     return {'settings': {k: updated[k] for k in PUBLIC}}
 
@@ -182,6 +217,32 @@ def trust(cfg, data):
     return verify_host(cfg)
 
 
+def configuration_hash(cfg):
+    digest = hashlib.sha256(json.dumps(cfg, sort_keys=True).encode())
+    # A replaced key or credentials file invalidates queued work and previous tests,
+    # even when its configured pathname remains unchanged after recovery.
+    for name in (('ssh_key', 'ssh_read_key', 'known_hosts') if cfg['destination'] == 'ssh' else ('s3_credentials',)):
+        try:
+            with open(cfg[name], 'rb') as stream:
+                value = stream.read(65537)
+        except OSError:
+            value = b'unavailable'
+        digest.update(name.encode() + b'\0' + value)
+    return digest.hexdigest()
+
+
+def record_connection_test(cfg, job):
+    if job.get('action') != 'test':
+        return
+    file = Path(cfg['runtime']) / 'status/connection-test.json'
+    file.parent.mkdir(parents=True, exist_ok=True)
+    with job_lock(file):
+        previous = json.loads(file.read_text()) if file.exists() else {}
+        if previous.get('id') != job.get('id') and previous.get('created_at', '') > job.get('created_at', ''):
+            return  # An older worker finishing must not replace a newer test.
+        atomic_json(file, job)
+
+
 def enqueue(cfg, data):
     action = data.get('action')
     if action not in ('backup', 'verify', 'restore', 'test', 'delete'):
@@ -198,10 +259,17 @@ def enqueue(cfg, data):
     if kind not in ('data', 'database', 'complete', 'disaster'):
         raise ValueError('Invalid restore type')
     job_id = uuid.uuid4().hex
-    job = {'configuration_hash': hashlib.sha256(json.dumps(cfg, sort_keys=True).encode()).hexdigest(), 'id': job_id, 'action': action, 'generation': data.get('generation', ''),
+    job = {'configuration_hash': configuration_hash(cfg), 'id': job_id, 'action': action, 'generation': data.get('generation', ''),
            'type': kind, 'state': 'queued', 'created_at': utcnow().isoformat()}
     atomic_json(Path(cfg['runtime']) / 'jobs' / (job_id + '.json'), job)
-    subprocess.run(['systemctl', 'start', 'backupmanager-job@' + job_id + '.service'], check=True, capture_output=True)
+    record_connection_test(cfg, job)
+    try:
+        subprocess.run(['systemctl', 'start', 'backupmanager-job@' + job_id + '.service'], check=True, capture_output=True)
+    except Exception:
+        job.update(state='failed', finished_at=utcnow().isoformat(), **failure_info(Failure('job_start_failed')))
+        atomic_json(Path(cfg['runtime']) / 'jobs' / (job_id + '.json'), job)
+        record_connection_test(cfg, job)
+        raise Failure('job_start_failed') from None
     return {'job': job}
 
 
@@ -223,10 +291,11 @@ def worker(job_id):
             raise JobCancelled('Job cancelled before making restore changes')
     try:
         checkpoint()
-        if job.get('configuration_hash') != hashlib.sha256(json.dumps(cfg, sort_keys=True).encode()).hexdigest():
+        if job.get('configuration_hash') != configuration_hash(cfg):
             raise RuntimeError('Settings changed after this job was queued; submit it again')
         job['state'] = 'running'
         atomic_json(file, job)
+        record_connection_test(cfg, job)
         engine = Engine(cfg)
         action = job['action']
         if action == 'backup':
@@ -249,20 +318,33 @@ def worker(job_id):
                     # Probe both write and read paths; clean up only this unique test generation.
                     generation = utcnow().strftime('%Y%m%dT%H%M%SZ-') + uuid.uuid4().hex[:12]
                     key = 'generations/' + generation + '/config.000000'
+                    primary_error = None
                     try:
                         engine.storage.put(key, b'backupmanager-connection-test')
+                        checkpoint()
                         if engine.storage.get(key) != b'backupmanager-connection-test':
                             raise RuntimeError('Connection verification failed')
+                        checkpoint()
                         result = {'connected': True}
+                    except Exception as error:
+                        primary_error = error
+                        raise
                     finally:
-                        engine.storage.delete_generation(generation)
+                        try:
+                            engine.storage.delete_generation(generation)
+                        except Exception as cleanup:
+                            job['cleanup_error'] = failure_info(cleanup)
+                            print('Backup Manager connection-test cleanup: ' + job['cleanup_error']['error'], file=sys.stderr)
+                            if primary_error is None:
+                                raise Failure('cleanup_failed') from cleanup
         job.update(state='completed', result=result)
     except Exception as error:
-        # Only our deliberately sanitized errors are public; never serialize subprocess/http exceptions.
-        message = str(error) if type(error) in (ValueError, RuntimeError, JobCancelled) else 'Operation failed; check configuration and service prerequisites'
-        job.update(state='cancelled' if isinstance(error, JobCancelled) else 'failed', error=message)
+        cause = failure_info(error)
+        log_failure(error, 'job failure')
+        job.update(state='cancelled' if isinstance(error, JobCancelled) else 'failed', **cause)
     job['finished_at'] = utcnow().isoformat()
     atomic_json(file, job)
+    record_connection_test(cfg, job)
     # Keep job metadata bounded; never prune running jobs.
     for old in file.parent.glob('*.json'):
         if old.stat().st_mtime < (utcnow() - dt.timedelta(days=30)).timestamp():
@@ -276,7 +358,26 @@ def worker(job_id):
 def dispatch(action, cfg, data):
     if action == 'settings':
         settings = {key: cfg[key] for key in PUBLIC}
-        settings.update(host_status(cfg))
+        settings['aws_regions'] = AWS_REGIONS
+        settings['storage_profiles'] = public_profiles(cfg)
+        connection_file = Path(cfg['runtime']) / 'status/connection-test.json'
+        try:
+            connection = json.loads(connection_file.read_text()) if connection_file.is_file() else None
+        except (OSError, ValueError):
+            connection = None
+        if isinstance(connection, dict) and connection.get('configuration_hash') == configuration_hash(cfg):
+            settings['connection_test'] = connection
+        if cfg['destination'] == 'aws_s3':
+            settings['s3_endpoint'] = s3_endpoint(cfg)
+        if cfg['destination'] == 'ssh':
+            settings.update(host_status(cfg))
+            from .client_helpers import public_key
+            for field, path in [('ssh_public_key', cfg['ssh_key']), ('ssh_restore_public_key', cfg['ssh_read_key'])]:
+                try:
+                    settings[field] = public_key(path)
+                except (OSError, ValueError, subprocess.SubprocessError):
+                    settings[field] = ''
+                    settings['ssh_key_error'] = 'SSH public keys unavailable; ask the server administrator to check the installed key pair'
         return {'settings': settings}
     if action == 'save':
         return save(cfg, data)
@@ -301,7 +402,7 @@ def dispatch(action, cfg, data):
         with job_lock(file):
             job = json.loads(file.read_text())
             if action == 'cancel':
-                if job['state'] not in ('queued', 'running') or job['action'] not in ('verify', 'restore'):
+                if job['state'] not in ('queued', 'running') or job['action'] not in ('verify', 'restore', 'test'):
                     raise ValueError('This job cannot be cancelled safely')
                 file.with_suffix('.cancel').touch(mode=0o600)
         return {'job': job}
@@ -317,8 +418,7 @@ def main():
         result = dispatch(action, load(), data)
         print(json.dumps({'success': True} | result))
     except Exception as error:
-        print('Backup Manager control failure: ' + type(error).__name__ + ': ' + str(error), file=sys.stderr)
-        message = str(error) if type(error) in (ValueError, RuntimeError, JobCancelled) else 'Operation unavailable; check installation and configuration'
-        print(json.dumps({'success': False, 'error': message}))
+        log_failure(error, 'control failure')
+        print(json.dumps({'success': False, **failure_info(error)}))
         return 1
     return 0

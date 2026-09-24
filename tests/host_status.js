@@ -15,8 +15,8 @@ for (let reload = 0; reload < 2; reload++) {
     root.dataset = {};
     context.render(root, {host_trusted: true, host_key: 'ssh-ed25519 fixture', host_fingerprint: 'SHA256:fixture'});
     assert.equal(color, 'bm-status-green');
-    assert.equal(label.textContent, 'Ready');
-    assert.equal(elements['bm-ssh-verification-status'].textContent, 'Host verified.');
+    assert.equal(label.textContent, 'Host key pinned');
+    assert.equal(elements['bm-ssh-verification-status'].textContent, 'Host key pinned. Test the connection to check write and read access.');
     assert.equal(elements['bm-host-key'].value, 'ssh-ed25519 fixture');
     assert.equal(elements['bm-host-fingerprint'].value, 'SHA256:fixture');
 }
@@ -26,6 +26,6 @@ assert.equal(elements['bm-ssh-verification-status'].textContent, 'Host verificat
 context.render(root, {host_trusted: false, host_error: 'SSH host verification failed'});
 assert.equal(color, 'bm-status-red');
 assert.equal(label.textContent, 'Failed');
-assert.equal(elements['bm-ssh-verification-status'].textContent, 'SSH host verification failed');
+assert.equal(elements['bm-ssh-verification-status'].textContent, 'SSH host verification failed.');
 assert.ok(fs.readFileSync('app/backupstatus/templates/admin.php', 'utf8').includes('id="bm-technical"'));
 console.log('Host status regression tests passed.');

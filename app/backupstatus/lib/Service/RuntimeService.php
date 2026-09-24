@@ -7,7 +7,23 @@ final class RuntimeService {
         if (!in_array($action, ['settings', 'save', 'trust', 'status', 'inventory', 'enqueue', 'job', 'cancel'], true)) {
             throw new \InvalidArgumentException('Invalid runtime operation');
         }
-        return $this->execute(['/usr/local/sbin/backupmanager-control', $action], $input);
+        $result = $this->execute(['/usr/local/sbin/backupmanager-control', $action], $input);
+        $result['error_message'] = ErrorMessages::message($result);
+        foreach (['status', 'job'] as $key) {
+            if (isset($result[$key]) && is_array($result[$key])) {
+                $result[$key]['error_message'] = ErrorMessages::message($result[$key]);
+            }
+        }
+        if (!empty($result['settings']['host_error'])) {
+            $result['settings']['host_error_message'] = ErrorMessages::message([
+                'error' => $result['settings']['host_error'],
+                'error_code' => $result['settings']['host_error_code'] ?? 'ssh_host_verification',
+            ]);
+        }
+        if (isset($result['settings']['connection_test'])) {
+            $result['settings']['connection_test']['error_message'] = ErrorMessages::message($result['settings']['connection_test']);
+        }
+        return $result;
     }
 
     public function helper(string $name, array $input = []): array {
@@ -22,7 +38,7 @@ final class RuntimeService {
             return $this->executeProcess($command, $input);
         } catch (\Throwable $error) {
             error_log('Backup Manager runtime process failure: ' . $error->getMessage());
-            return ['success' => false, 'error' => 'Runtime unavailable; check the server log'];
+            return ['success' => false, 'error_code' => 'runtime_unavailable', 'error' => 'Runtime unavailable; check the server log'];
         }
     }
 
@@ -31,7 +47,7 @@ final class RuntimeService {
             [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
         if (!is_resource($process)) {
             error_log('Backup Manager runtime process could not be started');
-            return ['success' => false, 'error' => 'Runtime unavailable'];
+            return ['success' => false, 'error_code' => 'runtime_unavailable', 'error' => 'Runtime unavailable'];
         }
         fwrite($pipes[0], json_encode($input, JSON_THROW_ON_ERROR));
         fclose($pipes[0]);
@@ -60,7 +76,7 @@ final class RuntimeService {
         if (!is_array($result)) {
             $diagnostic = trim(preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', '', $errorOutput));
             error_log('Backup Manager runtime returned invalid JSON (exit ' . (string)$exitCode . '): ' . substr($diagnostic, 0, 1000));
-            return ['success' => false, 'error' => 'Runtime unavailable or timed out'];
+            return ['success' => false, 'error_code' => 'runtime_unavailable', 'error' => 'Runtime unavailable or timed out'];
         }
         if (($result['success'] ?? true) === false && $errorOutput !== '') {
             $diagnostic = trim(preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', '', $errorOutput));

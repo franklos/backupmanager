@@ -8,13 +8,12 @@ use RuntimeException;
 
 final class Config
 {
+    public const FILE = '/etc/backupmanager-provider/config.php';
     private array $config;
 
-    public function __construct(string $file)
+    public function __construct(string $file = self::FILE)
     {
-        if (is_file('/etc/backupmanager-provider/config.php')) {
-            $file = '/etc/backupmanager-provider/config.php';
-        }
+        $file = realpath($file) ?: $file;
         if (!is_file($file)) {
             throw new RuntimeException('Provider configuration file not found');
         }
